@@ -166,10 +166,15 @@ npm run dev
 - [x] PWA manifest
 - [x] CLAUDE.md
 
-### Milestone 2 — Trip Management (TODO)
-- Create/edit/delete trips
-- Add/reorder locations with drag-and-drop
-- Supabase CRUD connected
+### ✅ Milestone 2 — Trip Management
+- [x] Trips list page with create/edit/delete
+- [x] TripDialog (create & edit form with dates, description, route preference)
+- [x] TripCard with hover actions (edit, delete with confirmation)
+- [x] Trip detail page with locations panel + route map
+- [x] LocationSearch with Nominatim geocoding (OpenStreetMap, debounced)
+- [x] LocationList with up/down reordering, expandable dates & notes
+- [x] Data layer: createTrip / updateTrip / deleteTrip / getTripWithLocations (mock, Supabase-ready)
+- [ ] Supabase CRUD wiring (needs .env.local credentials)
 
 ### Milestone 3 — Maps & Routing (TODO)
 - MapLibre interactive map
