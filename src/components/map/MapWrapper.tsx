@@ -1,16 +1,36 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import type { Location } from '@/types';
 
 const MapView = dynamic(() => import('./MapView'), {
   ssr: false,
   loading: () => <div className="h-full w-full animate-pulse rounded-2xl bg-muted" />,
 });
 
-export function MapWrapper({ className }: { className?: string }) {
+interface MapWrapperProps {
+  className?: string;
+  locations?: Location[];
+  routeGeometry?: GeoJSON.LineString | null;
+  routes?: { tripId: string; geometry: GeoJSON.LineString }[];
+  tripLabels?: Record<string, string>;
+}
+
+export function MapWrapper({
+  className,
+  locations,
+  routeGeometry,
+  routes,
+  tripLabels,
+}: MapWrapperProps) {
   return (
     <div className={className}>
-      <MapView />
+      <MapView
+        locations={locations}
+        routeGeometry={routeGeometry}
+        routes={routes}
+        tripLabels={tripLabels}
+      />
     </div>
   );
 }

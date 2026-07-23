@@ -10,14 +10,20 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Trip, Location } from '@/types';
-import { getTripWithLocations, updateTrip, CreateTripInput } from '@/lib/trips-store';
+import {
+  getTripWithLocations,
+  updateTrip,
+  updateTripRoute,
+  CreateTripInput,
+  createLocation,
+  deleteLocation,
+  updateLocation,
+  reorderLocations,
+} from '@/lib/trips-store';
+import { calculateRoute } from '@/lib/routing/osrm';
 import { CalendarDays, Navigation, Pencil, ArrowLeft, MapPin } from 'lucide-react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-
-function generateId() {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
 
 function formatDate(dateStr: string) {
   return new Date(dateStr).toLocaleDateString('en-GB', {
@@ -33,14 +39,45 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
   const [locations, setLocations] = useState<Location[]>([]);
   const [editOpen, setEditOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [routeGeometry, setRouteGeometry] = useState<GeoJSON.LineString | null>(null);
+  const [routing, setRouting] = useState(false);
 
   useEffect(() => {
     getTripWithLocations(id).then(({ trip, locations }) => {
       setTrip(trip);
       setLocations(locations);
+      setRouteGeometry(trip.route_geometry);
       setLoading(false);
     });
   }, [id]);
+
+  const displayedRouteGeometry = locations.length < 2 ? null : routeGeometry;
+
+  useEffect(() => {
+    if (locations.length < 2) return;
+
+    let cancelled = false;
+    // Standard fetch-on-mount pattern (React docs); the rule flags the "mark as loading"
+    // call itself even though nothing external is synchronized before the async call resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRouting(true);
+    calculateRoute(locations).then((result) => {
+      if (cancelled || !result) {
+        setRouting(false);
+        return;
+      }
+      setRouteGeometry(result.geometry);
+      setTrip((prev) => (prev ? { ...prev, total_km: result.distanceKm } : prev));
+      setRouting(false);
+      updateTripRoute(id, { total_km: result.distanceKm, route_geometry: result.geometry }).catch(
+        () => {}
+      );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id, locations]);
 
   async function handleEditSave(data: CreateTripInput) {
     if (!trip) return;
@@ -48,56 +85,53 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
     setTrip(updated);
   }
 
-  function addLocation(loc: Omit<Location, 'id' | 'created_at' | 'updated_at'>) {
-    const newLoc: Location = {
-      ...loc,
-      id: generateId(),
-      visit_order: locations.length,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    setLocations((prev) => [...prev, newLoc]);
+  async function addLocation(loc: Omit<Location, 'id' | 'created_at' | 'updated_at'>) {
+    const created = await createLocation({ ...loc, visit_order: locations.length });
+    setLocations((prev) => [...prev, created]);
   }
 
-  function removeLocation(locId: string) {
-    setLocations((prev) => {
-      const filtered = prev.filter((l) => l.id !== locId);
-      return filtered.map((l, i) => ({ ...l, visit_order: i }));
-    });
+  async function removeLocation(locId: string) {
+    await deleteLocation(locId);
+    const reordered = locations
+      .filter((l) => l.id !== locId)
+      .map((l, i) => ({ ...l, visit_order: i }));
+    setLocations(reordered);
+    await reorderLocations(reordered);
   }
 
-  function moveUp(locId: string) {
-    setLocations((prev) => {
-      const idx = prev.findIndex((l) => l.id === locId);
-      if (idx <= 0) return prev;
-      const next = [...prev];
-      [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
-      return next.map((l, i) => ({ ...l, visit_order: i }));
-    });
+  async function moveUp(locId: string) {
+    const idx = locations.findIndex((l) => l.id === locId);
+    if (idx <= 0) return;
+    const next = [...locations];
+    [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+    const reordered = next.map((l, i) => ({ ...l, visit_order: i }));
+    setLocations(reordered);
+    await reorderLocations(reordered);
   }
 
-  function moveDown(locId: string) {
-    setLocations((prev) => {
-      const idx = prev.findIndex((l) => l.id === locId);
-      if (idx >= prev.length - 1) return prev;
-      const next = [...prev];
-      [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-      return next.map((l, i) => ({ ...l, visit_order: i }));
-    });
+  async function moveDown(locId: string) {
+    const idx = locations.findIndex((l) => l.id === locId);
+    if (idx >= locations.length - 1) return;
+    const next = [...locations];
+    [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+    const reordered = next.map((l, i) => ({ ...l, visit_order: i }));
+    setLocations(reordered);
+    await reorderLocations(reordered);
   }
 
-  function updateDates(locId: string, arrival: string, departure: string) {
+  async function updateDates(locId: string, arrival: string, departure: string) {
+    const arrival_date = arrival || null;
+    const departure_date = departure || null;
     setLocations((prev) =>
-      prev.map((l) =>
-        l.id === locId ? { ...l, arrival_date: arrival || null, departure_date: departure || null } : l
-      )
+      prev.map((l) => (l.id === locId ? { ...l, arrival_date, departure_date } : l))
     );
+    await updateLocation(locId, { arrival_date, departure_date });
   }
 
-  function updateNotes(locId: string, notes: string) {
-    setLocations((prev) =>
-      prev.map((l) => (l.id === locId ? { ...l, notes: notes || null } : l))
-    );
+  async function updateNotes(locId: string, notes: string) {
+    const notesValue = notes || null;
+    setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, notes: notesValue } : l)));
+    await updateLocation(locId, { notes: notesValue });
   }
 
   if (loading) {
@@ -204,8 +238,19 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
 
           {/* Right: map */}
           <div className="space-y-3">
-            <h3 className="font-semibold">Route</h3>
-            <MapWrapper className="h-[400px] lg:h-[500px]" />
+            <h3 className="font-semibold">
+              Route
+              {routing && (
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  Calculating…
+                </span>
+              )}
+            </h3>
+            <MapWrapper
+              className="h-[400px] lg:h-[500px]"
+              locations={locations}
+              routeGeometry={displayedRouteGeometry}
+            />
             {locations.length < 2 && (
               <p className="text-center text-xs text-muted-foreground">
                 Add at least 2 locations to see the route

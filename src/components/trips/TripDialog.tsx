@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Trip } from '@/types';
 import { CreateTripInput } from '@/lib/trips-store';
 import {
@@ -35,19 +35,23 @@ export function TripDialog({ open, onOpenChange, trip, onSave }: TripDialogProps
   const [form, setForm] = useState<CreateTripInput>(EMPTY);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    if (trip) {
-      setForm({
-        title: trip.title,
-        description: trip.description ?? '',
-        start_date: trip.start_date ?? '',
-        end_date: trip.end_date ?? '',
-        route_preference: trip.route_preference,
-      });
-    } else {
-      setForm(EMPTY);
-    }
-  }, [trip, open]);
+  // Reset the form whenever the dialog opens for a (possibly different) trip.
+  // Done during render, not in an effect, so the fields never flash stale content.
+  const [syncedFor, setSyncedFor] = useState<{ trip?: Trip | null; open: boolean }>();
+  if (!syncedFor || syncedFor.trip !== trip || syncedFor.open !== open) {
+    setSyncedFor({ trip, open });
+    setForm(
+      trip
+        ? {
+            title: trip.title,
+            description: trip.description ?? '',
+            start_date: trip.start_date ?? '',
+            end_date: trip.end_date ?? '',
+            route_preference: trip.route_preference,
+          }
+        : EMPTY
+    );
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

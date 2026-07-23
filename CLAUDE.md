@@ -78,7 +78,8 @@ CREATE TABLE trips (
   end_date DATE,
   cover_image TEXT,
   total_km DECIMAL(10,2) DEFAULT 0,
-  route_preference TEXT DEFAULT 'fastest' CHECK (route_preference IN ('fastest', 'avoid_tolls')),
+  route_preference TEXT DEFAULT 'allow_tolls' CHECK (route_preference IN ('allow_tolls', 'avoid_tolls')),
+  route_geometry JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -97,7 +98,7 @@ CREATE TABLE locations (
   arrival_date DATE,
   departure_date DATE,
   notes TEXT,
-  order_index INTEGER NOT NULL,
+  visit_order INTEGER NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
@@ -115,6 +116,7 @@ CREATE TABLE route_segments (
   calculated_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
+Exists in the schema but is currently unused — Milestone 3 stores one whole-trip route on `trips.route_geometry` instead of per-leg segments. Revisit this table if Milestone 5's per-stop "km to next stop" requirement needs individual leg distances/geometry.
 
 ---
 
@@ -174,23 +176,29 @@ npm run dev
 - [x] LocationSearch with Nominatim geocoding (OpenStreetMap, debounced)
 - [x] LocationList with up/down reordering, expandable dates & notes
 - [x] Data layer: createTrip / updateTrip / deleteTrip / getTripWithLocations (mock, Supabase-ready)
-- [ ] Supabase CRUD wiring (needs .env.local credentials)
+- [x] Supabase CRUD wiring (trips + locations; falls back to mock data when .env.local is unset)
 
-### Milestone 3 — Maps & Routing (TODO)
-- MapLibre interactive map
-- OSRM real driving distances
-- Route lines on map
-- Toll road preference
+### ✅ Milestone 3 — Maps & Routing
+- [x] MapLibre interactive map: numbered, color-coded markers + popups (name, dates, notes), auto-fit bounds — on trip detail, dashboard, and `/map`
+- [x] OSRM real driving distances (`src/lib/routing/osrm.ts`), recalculated live whenever a trip's locations change
+- [x] Route lines on map (actual road-following geometry, not straight lines)
+- [ ] Toll road preference — **not actually implemented**: the public OSRM demo server rejects `exclude=toll` and `exclude=motorway` (400 "Exclude flag combination is not supported"). `route_preference` is stored and shown in the UI but has no effect on the calculated route. Real toll avoidance needs a different routing backend (GraphHopper/Valhalla with toll tagging).
 
-### Milestone 4 — Statistics (TODO)
-- Per-trip and global stats
-- Km per year charts
-- Countries/cities visited
+### Debugging a little bit
+- [x] Map markers numbered out of order / route line missing on the dashboard and `/map` — two root causes: `getAllLocations()` had no `ORDER BY` (Postgres doesn't guarantee row order without one, so trip_id/visit_order came back scrambled), and `MapView` only ever supported a single route line while multi-trip views need one per trip. Fixed: `getAllLocations()` now orders by `trip_id, visit_order`; `MapView` numbers markers per-trip (not by combined-array index) and accepts a `routes` prop — one colored `LineString` per trip — used by the dashboard and `/map` (trip detail still uses the single `routeGeometry` prop, unchanged).
+
+### ✅ Milestone 4 — Statistics
+- [x] Global stats: `StatsGrid` (countries/cities/trips/km) reused from the dashboard, plus a longest-trip highlight badge
+- [x] Km-per-year bar chart (`src/components/stats/YearlyKmChart.tsx`)
+- [x] Countries/cities visited, ranked by stops (`src/components/stats/CountryBreakdown.tsx`)
+- [x] Per-trip breakdown: date range, city count, km (`src/components/stats/TripBreakdown.tsx`)
+- [x] Aggregation helpers in `src/lib/stats.ts` (pure functions over already-fetched `Trip[]`/`Location[]` — no DB-side aggregation needed for a single-user dataset this small)
 
 ### Milestone 5 — Instagram Export (TODO)
-- 1080×1350 and 1080×1920 formats
+- 1080×1350 and 1080×1920 formats and 1920x1920/1080x1080
 - Canvas/html2canvas export
 - Theme customization
+- I need to be able to see on the rectangle picture for instagram how much kilometers the next stop is, for example: paris -> lyon (x km) then the next day i post a new post with now paris -> lyon -> antibes (y km) with km between lyon and antibes and also the total km for that trip
 
 ### Milestone 6 — PWA + Deployment (TODO)
 - Full PWA with offline support

@@ -1,5 +1,7 @@
 import { Trip, Location } from '@/types';
-import { MOCK_TRIPS } from './mock-data';
+import { MOCK_TRIPS, MOCK_LOCATIONS, getAllMockLocations } from './mock-data';
+import { isSupabaseConfigured } from './supabase/config';
+import { createBrowserClient } from './supabase/client';
 
 export type CreateTripInput = {
   title: string;
@@ -11,16 +13,11 @@ export type CreateTripInput = {
 
 export type UpdateTripInput = Partial<CreateTripInput>;
 
-export type CreateLocationInput = {
-  name: string;
-  latitude: number;
-  longitude: number;
-  country?: string;
-  city?: string;
-  arrival_date?: string;
-  departure_date?: string;
-  notes?: string;
-};
+export type CreateLocationInput = Omit<Location, 'id' | 'created_at' | 'updated_at'>;
+export type UpdateLocationInput = Partial<
+  Pick<Location, 'arrival_date' | 'departure_date' | 'notes' | 'visit_order'>
+>;
+export type UpdateTripRouteInput = { total_km: number; route_geometry: GeoJSON.LineString };
 
 function generateId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -30,128 +27,178 @@ function now() {
   return new Date().toISOString();
 }
 
+/** Postgres `date` columns reject "" (only accept a real date or null) — the trip form leaves cleared fields as "". */
+function emptyToNull(value: string | undefined): string | null {
+  return value ? value : null;
+}
+
 // --- Trip CRUD ---
 
+export async function getTrips(): Promise<Trip[]> {
+  if (!isSupabaseConfigured()) return MOCK_TRIPS;
+
+  const supabase = createBrowserClient();
+  const { data, error } = await supabase
+    .from('trips')
+    .select('*')
+    .order('start_date', { ascending: false, nullsFirst: false });
+  if (error) throw error;
+  return data as Trip[];
+}
+
 export async function createTrip(input: CreateTripInput): Promise<Trip> {
-  const trip: Trip = {
-    id: generateId(),
-    title: input.title,
-    description: input.description ?? null,
-    start_date: input.start_date ?? null,
-    end_date: input.end_date ?? null,
-    cover_image: null,
-    route_preference: input.route_preference,
-    total_km: null,
-    created_at: now(),
-    updated_at: now(),
-  };
-  return trip;
+  const description = emptyToNull(input.description);
+  const start_date = emptyToNull(input.start_date);
+  const end_date = emptyToNull(input.end_date);
+
+  if (!isSupabaseConfigured()) {
+    return {
+      id: generateId(),
+      title: input.title,
+      description,
+      start_date,
+      end_date,
+      cover_image: null,
+      route_preference: input.route_preference,
+      total_km: null,
+      route_geometry: null,
+      created_at: now(),
+      updated_at: now(),
+    };
+  }
+
+  const supabase = createBrowserClient();
+  const { data, error } = await supabase
+    .from('trips')
+    .insert({
+      title: input.title,
+      description,
+      start_date,
+      end_date,
+      route_preference: input.route_preference,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data as Trip;
 }
 
 export async function updateTrip(id: string, input: UpdateTripInput): Promise<Trip> {
-  const base = MOCK_TRIPS.find((t) => t.id === id) ?? MOCK_TRIPS[0];
-  return {
-    ...base,
+  const sanitized = {
     ...input,
-    id,
-    updated_at: now(),
+    ...(input.description !== undefined && { description: emptyToNull(input.description) }),
+    ...(input.start_date !== undefined && { start_date: emptyToNull(input.start_date) }),
+    ...(input.end_date !== undefined && { end_date: emptyToNull(input.end_date) }),
   };
+
+  if (!isSupabaseConfigured()) {
+    const base = MOCK_TRIPS.find((t) => t.id === id) ?? MOCK_TRIPS[0];
+    return { ...base, ...sanitized, id, updated_at: now() };
+  }
+
+  const supabase = createBrowserClient();
+  const { data, error } = await supabase
+    .from('trips')
+    .update({ ...sanitized, updated_at: now() })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data as Trip;
 }
 
 export async function deleteTrip(id: string): Promise<void> {
-  // No-op in mock mode; Supabase will cascade-delete locations
-  void id;
+  if (!isSupabaseConfigured()) return;
+
+  const supabase = createBrowserClient();
+  const { error } = await supabase.from('trips').delete().eq('id', id);
+  if (error) throw error;
 }
 
 export async function getTripWithLocations(
   id: string
 ): Promise<{ trip: Trip; locations: Location[] }> {
-  const trip = MOCK_TRIPS.find((t) => t.id === id) ?? MOCK_TRIPS[0];
-  const locations: Location[] = [
-    {
-      id: 'loc-1',
-      trip_id: id,
-      name: 'Antwerp, Belgium',
-      latitude: 51.2194,
-      longitude: 4.4025,
-      country: 'Belgium',
-      city: 'Antwerp',
-      arrival_date: '2025-07-01',
-      departure_date: '2025-07-01',
-      notes: 'Starting point',
-      visit_order: 0,
-      created_at: now(),
-      updated_at: now(),
-    },
-    {
-      id: 'loc-2',
-      trip_id: id,
-      name: 'Paris, France',
-      latitude: 48.8566,
-      longitude: 2.3522,
-      country: 'France',
-      city: 'Paris',
-      arrival_date: '2025-07-02',
-      departure_date: '2025-07-04',
-      notes: null,
-      visit_order: 1,
-      created_at: now(),
-      updated_at: now(),
-    },
-    {
-      id: 'loc-3',
-      trip_id: id,
-      name: 'Barcelona, Spain',
-      latitude: 41.3851,
-      longitude: 2.1734,
-      country: 'Spain',
-      city: 'Barcelona',
-      arrival_date: '2025-07-08',
-      departure_date: '2025-07-12',
-      notes: null,
-      visit_order: 2,
-      created_at: now(),
-      updated_at: now(),
-    },
-  ];
-
-  if (id === 'mock-2') {
-    return {
-      trip,
-      locations: [
-        {
-          id: 'loc-4',
-          trip_id: id,
-          name: 'Antwerp, Belgium',
-          latitude: 51.2194,
-          longitude: 4.4025,
-          country: 'Belgium',
-          city: 'Antwerp',
-          arrival_date: '2025-05-10',
-          departure_date: '2025-05-10',
-          notes: null,
-          visit_order: 0,
-          created_at: now(),
-          updated_at: now(),
-        },
-        {
-          id: 'loc-5',
-          trip_id: id,
-          name: 'Amsterdam, Netherlands',
-          latitude: 52.3676,
-          longitude: 4.9041,
-          country: 'Netherlands',
-          city: 'Amsterdam',
-          arrival_date: '2025-05-10',
-          departure_date: '2025-05-12',
-          notes: null,
-          visit_order: 1,
-          created_at: now(),
-          updated_at: now(),
-        },
-      ],
-    };
+  if (!isSupabaseConfigured()) {
+    const trip = MOCK_TRIPS.find((t) => t.id === id) ?? MOCK_TRIPS[0];
+    const locations = MOCK_LOCATIONS[id] ?? MOCK_LOCATIONS['mock-1'];
+    return { trip, locations };
   }
 
-  return { trip, locations };
+  const supabase = createBrowserClient();
+  const [{ data: trip, error: tripError }, { data: locations, error: locError }] =
+    await Promise.all([
+      supabase.from('trips').select('*').eq('id', id).single(),
+      supabase.from('locations').select('*').eq('trip_id', id).order('visit_order'),
+    ]);
+  if (tripError) throw tripError;
+  if (locError) throw locError;
+  return { trip: trip as Trip, locations: locations as Location[] };
+}
+
+/** Persists the recalculated total distance and route line for a trip. Mock mode is a no-op. */
+export async function updateTripRoute(id: string, input: UpdateTripRouteInput): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+
+  const supabase = createBrowserClient();
+  const { error } = await supabase.from('trips').update(input).eq('id', id);
+  if (error) throw error;
+}
+
+// --- Location CRUD ---
+
+export async function getAllLocations(): Promise<Location[]> {
+  if (!isSupabaseConfigured()) return getAllMockLocations();
+
+  const supabase = createBrowserClient();
+  const { data, error } = await supabase
+    .from('locations')
+    .select('*')
+    .order('trip_id')
+    .order('visit_order');
+  if (error) throw error;
+  return data as Location[];
+}
+
+export async function createLocation(input: CreateLocationInput): Promise<Location> {
+  if (!isSupabaseConfigured()) {
+    return { ...input, id: generateId(), created_at: now(), updated_at: now() };
+  }
+
+  const supabase = createBrowserClient();
+  const { data, error } = await supabase.from('locations').insert(input).select().single();
+  if (error) throw error;
+  return data as Location;
+}
+
+export async function deleteLocation(id: string): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+
+  const supabase = createBrowserClient();
+  const { error } = await supabase.from('locations').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function updateLocation(id: string, input: UpdateLocationInput): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+
+  const supabase = createBrowserClient();
+  const { error } = await supabase
+    .from('locations')
+    .update({ ...input, updated_at: now() })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+/** Persists the full visit order for a trip after a reorder or removal. */
+export async function reorderLocations(
+  locations: Pick<Location, 'id' | 'visit_order'>[]
+): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+
+  const supabase = createBrowserClient();
+  await Promise.all(
+    locations.map(({ id, visit_order }) =>
+      supabase.from('locations').update({ visit_order }).eq('id', id)
+    )
+  );
 }

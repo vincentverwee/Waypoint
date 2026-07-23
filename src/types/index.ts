@@ -1,5 +1,4 @@
 export type RoutePreference = 'allow_tolls' | 'avoid_tolls';
-export type RoutingEngine = 'osrm' | 'graphhopper' | 'valhalla';
 
 export interface Trip {
   id: string;
@@ -10,6 +9,7 @@ export interface Trip {
   cover_image: string | null;
   route_preference: RoutePreference;
   total_km: number | null;
+  route_geometry: GeoJSON.LineString | null;
   created_at: string;
   updated_at: string;
 }
@@ -28,17 +28,6 @@ export interface Location {
   visit_order: number;
   created_at: string;
   updated_at: string;
-}
-
-export interface RouteData {
-  id: string;
-  trip_id: string;
-  distance_km: number;
-  geometry: object;
-  routing_engine: RoutingEngine;
-  avoid_tolls: boolean;
-  calculated_at: string;
-  raw_response: unknown;
 }
 
 export interface DashboardStats {

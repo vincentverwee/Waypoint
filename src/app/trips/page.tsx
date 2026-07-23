@@ -1,20 +1,23 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
 import { TripCard } from '@/components/trips/TripCard';
 import { TripDialog } from '@/components/trips/TripDialog';
 import { Button } from '@/components/ui/button';
 import { Trip } from '@/types';
-import { CreateTripInput, createTrip, updateTrip, deleteTrip } from '@/lib/trips-store';
-import { MOCK_TRIPS } from '@/lib/mock-data';
+import { CreateTripInput, createTrip, updateTrip, deleteTrip, getTrips } from '@/lib/trips-store';
 import { Plus, Route } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 export default function TripsPage() {
-  const [trips, setTrips] = useState<Trip[]>(MOCK_TRIPS);
+  const [trips, setTrips] = useState<Trip[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingTrip, setEditingTrip] = useState<Trip | null>(null);
+
+  useEffect(() => {
+    getTrips().then(setTrips);
+  }, []);
 
   function openCreate() {
     setEditingTrip(null);
