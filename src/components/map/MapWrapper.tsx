@@ -14,6 +14,11 @@ interface MapWrapperProps {
   routeGeometry?: GeoJSON.LineString | null;
   routes?: { tripId: string; geometry: GeoJSON.LineString }[];
   tripLabels?: Record<string, string>;
+  accentColor?: string;
+  showLabels?: boolean;
+  labeledIds?: string[];
+  showControls?: boolean;
+  onReady?: () => void;
 }
 
 export function MapWrapper({
@@ -22,6 +27,11 @@ export function MapWrapper({
   routeGeometry,
   routes,
   tripLabels,
+  accentColor,
+  showLabels,
+  labeledIds,
+  showControls,
+  onReady,
 }: MapWrapperProps) {
   return (
     <div className={className}>
@@ -30,6 +40,11 @@ export function MapWrapper({
         routeGeometry={routeGeometry}
         routes={routes}
         tripLabels={tripLabels}
+        accentColor={accentColor}
+        showLabels={showLabels}
+        labeledIds={labeledIds}
+        showControls={showControls}
+        onReady={onReady}
       />
     </div>
   );

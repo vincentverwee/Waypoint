@@ -8,6 +8,8 @@ export interface RoutePoint {
 export interface RouteResult {
   distanceKm: number;
   geometry: GeoJSON.LineString;
+  /** Distance in km between each consecutive pair of input points, in order. */
+  legsKm: number[];
 }
 
 /**
@@ -33,5 +35,6 @@ export async function calculateRoute(points: RoutePoint[]): Promise<RouteResult 
   return {
     distanceKm: Math.round((route.distance / 1000) * 10) / 10,
     geometry: route.geometry as GeoJSON.LineString,
+    legsKm: route.legs.map((leg: { distance: number }) => Math.round((leg.distance / 1000) * 10) / 10),
   };
 }

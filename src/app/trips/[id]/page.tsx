@@ -21,7 +21,7 @@ import {
   reorderLocations,
 } from '@/lib/trips-store';
 import { calculateRoute } from '@/lib/routing/osrm';
-import { CalendarDays, Navigation, Pencil, ArrowLeft, MapPin } from 'lucide-react';
+import { CalendarDays, Navigation, Pencil, ArrowLeft, MapPin, ImageDown } from 'lucide-react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 
@@ -194,15 +194,23 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
                   </Badge>
                 </div>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="shrink-0 gap-2"
-                onClick={() => setEditOpen(true)}
-              >
-                <Pencil size={14} />
-                Edit
-              </Button>
+              <div className="flex shrink-0 gap-2">
+                <Link href={`/trips/${id}/export`}>
+                  <Button variant="outline" size="sm" className="gap-2">
+                    <ImageDown size={14} />
+                    Export
+                  </Button>
+                </Link>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => setEditOpen(true)}
+                >
+                  <Pencil size={14} />
+                  Edit
+                </Button>
+              </div>
             </div>
           </div>
         </div>
