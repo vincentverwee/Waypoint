@@ -17,6 +17,8 @@ interface MapWrapperProps {
   accentColor?: string;
   showLabels?: boolean;
   labeledIds?: string[];
+  labelOverrides?: Record<string, string>;
+  reserveBottom?: number;
   showControls?: boolean;
   onReady?: () => void;
 }
@@ -30,6 +32,8 @@ export function MapWrapper({
   accentColor,
   showLabels,
   labeledIds,
+  labelOverrides,
+  reserveBottom,
   showControls,
   onReady,
 }: MapWrapperProps) {
@@ -43,6 +47,8 @@ export function MapWrapper({
         accentColor={accentColor}
         showLabels={showLabels}
         labeledIds={labeledIds}
+        labelOverrides={labelOverrides}
+        reserveBottom={reserveBottom}
         showControls={showControls}
         onReady={onReady}
       />

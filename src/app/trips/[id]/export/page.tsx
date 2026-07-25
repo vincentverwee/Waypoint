@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo, use } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, use } from 'react';
 import Link from 'next/link';
-import html2canvas from 'html2canvas';
+import { domToPng } from 'modern-screenshot';
 import { AppShell } from '@/components/layout/AppShell';
 import { MapWrapper } from '@/components/map/MapWrapper';
 import { Button } from '@/components/ui/button';
@@ -11,7 +11,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Trip, Location } from '@/types';
 import { getTripWithLocations } from '@/lib/trips-store';
 import { calculateRoute, RouteResult } from '@/lib/routing/osrm';
-import { ArrowLeft, Download, Sun, Moon, ImageDown, Check } from 'lucide-react';
+import { ArrowLeft, Download, Sun, Moon, ImageDown, Check, RotateCcw } from 'lucide-react';
 
 interface ExportFormat {
   id: string;
@@ -30,6 +30,9 @@ const FORMATS: ExportFormat[] = [
 const DESIGN_WIDTH = 1080;
 const PREVIEW_MAX_WIDTH = 380;
 const DEFAULT_ACCENT = '#4f46e5';
+// Concrete sans stack so html2canvas never falls back to serif if Inter isn't captured in time.
+const SANS_STACK =
+  "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 // Fallback ceiling in case the off-screen map's `idle` event never fires (network stall etc.).
 const EXPORT_READY_TIMEOUT_MS = 8000;
 
@@ -52,20 +55,26 @@ function slugify(text: string) {
   );
 }
 
+interface CaptionStop {
+  name: string;
+  secondary: string | null;
+}
+
 interface ExportStageProps {
   width: number;
   height: number;
   mapKey: string;
   locations: Location[];
   labeledIds: string[];
+  labelOverrides: Record<string, string>;
   routeGeometry: GeoJSON.LineString | null;
   accentColor: string;
   theme: 'light' | 'dark';
-  chain: string;
-  headline: string;
+  captionStops: CaptionStop[];
+  /** Name font size (in 1080px-design px) — shared by every stop so they read as equal-weight. */
+  nameSize: number;
   addedKm: number | null;
   totalKm: number | null;
-  arrivalDate: string | null;
   onReady?: () => void;
 }
 
@@ -75,14 +84,14 @@ function ExportStage({
   mapKey,
   locations,
   labeledIds,
+  labelOverrides,
   routeGeometry,
   accentColor,
   theme,
-  chain,
-  headline,
+  captionStops,
+  nameSize,
   addedKm,
   totalKm,
-  arrivalDate,
   onReady,
 }: ExportStageProps) {
   // Overlay typography is sized relative to a 1080px-wide design so the small on-screen
@@ -90,6 +99,16 @@ function ExportStage({
   const scale = width / DESIGN_WIDTH;
   const isDark = theme === 'dark';
   const textColor = isDark ? '#ffffff' : '#111111';
+
+  // Measure the caption text block so the map can reserve exactly that much space at the bottom
+  // (instead of a fixed 32%) — otherwise a tall multi-stop caption overlaps the markers/route.
+  const captionRef = useRef<HTMLDivElement>(null);
+  const [captionH, setCaptionH] = useState(0);
+  useLayoutEffect(() => {
+    if (captionRef.current) setCaptionH(captionRef.current.offsetHeight);
+  }, [captionStops, nameSize, addedKm, totalKm, scale]);
+  // Reserve = caption text height + the caption's bottom padding + a little clearance.
+  const reserveBottom = Math.round(captionH + (64 + 28) * scale);
 
   return (
     <div className="relative overflow-hidden rounded-2xl bg-muted" style={{ width, height }}>
@@ -100,6 +119,8 @@ function ExportStage({
         routeGeometry={routeGeometry}
         accentColor={accentColor}
         labeledIds={labeledIds}
+        labelOverrides={labelOverrides}
+        reserveBottom={reserveBottom}
         showControls={false}
         onReady={onReady}
       />
@@ -108,32 +129,43 @@ function ExportStage({
         style={{
           padding: `${120 * scale}px ${56 * scale}px ${64 * scale}px`,
           background: isDark
-            ? 'linear-gradient(to top, rgba(0,0,0,0.85), rgba(0,0,0,0))'
-            : 'linear-gradient(to top, rgba(255,255,255,0.92), rgba(255,255,255,0))',
+            ? 'linear-gradient(to top, rgba(0,0,0,0.88), rgba(0,0,0,0))'
+            : 'linear-gradient(to top, rgba(255,255,255,0.94), rgba(255,255,255,0))',
           color: textColor,
           textAlign: 'center',
+          fontFamily: SANS_STACK,
         }}
       >
-        {chain && (
-          <p style={{ fontSize: 30 * scale, marginBottom: 12 * scale, opacity: 0.85, fontWeight: 600 }}>
-            {chain}
-          </p>
-        )}
-        <p style={{ fontSize: 76 * scale, fontWeight: 800, lineHeight: 1.05, letterSpacing: '-0.02em' }}>
-          {headline}
-        </p>
-        {arrivalDate && (
-          <p style={{ fontSize: 28 * scale, marginTop: 12 * scale, opacity: 0.8 }}>{arrivalDate}</p>
-        )}
+        <div ref={captionRef}>
+        {captionStops.map((stop, i) => (
+          <div key={i} style={{ marginBottom: i < captionStops.length - 1 ? 22 * scale : 0 }}>
+            <p style={{ fontSize: nameSize * scale, fontWeight: 800, lineHeight: 1.05, letterSpacing: '-0.02em' }}>
+              {stop.name}
+            </p>
+            {stop.secondary && (
+              <p
+                style={{
+                  fontSize: Math.max(22, Math.round(nameSize * 0.4)) * scale,
+                  marginTop: 8 * scale,
+                  opacity: 0.82,
+                  fontWeight: 500,
+                  lineHeight: 1.25,
+                }}
+              >
+                {stop.secondary}
+              </p>
+            )}
+          </div>
+        ))}
         {(addedKm != null || totalKm != null) && (
           <div
             style={{
-              marginTop: 28 * scale,
+              marginTop: 30 * scale,
               display: 'flex',
               flexWrap: 'wrap',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: 16 * scale,
+              gap: 18 * scale,
             }}
           >
             {addedKm != null && addedKm > 0 && (
@@ -142,8 +174,8 @@ function ExportStage({
                   background: accentColor,
                   color: '#ffffff',
                   borderRadius: 999,
-                  padding: `${10 * scale}px ${26 * scale}px`,
-                  fontSize: 30 * scale,
+                  padding: `${12 * scale}px ${30 * scale}px`,
+                  fontSize: 38 * scale,
                   fontWeight: 700,
                 }}
               >
@@ -151,12 +183,13 @@ function ExportStage({
               </span>
             )}
             {totalKm != null && (
-              <span style={{ fontSize: 30 * scale, opacity: 0.85, fontWeight: 600 }}>
+              <span style={{ fontSize: 34 * scale, opacity: 0.85, fontWeight: 600 }}>
                 {totalKm.toLocaleString()} km total
               </span>
             )}
           </div>
         )}
+        </div>
       </div>
     </div>
   );
@@ -171,6 +204,11 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   // Ids of the stops to feature on this post. The whole trip is always drawn; these only
   // control which stops get a name label and which legs count toward the "+km added".
   const [included, setIncluded] = useState<Set<string>>(new Set());
+  // Per-stop caption overrides (map tag + stacked caption name). Blank/absent falls back to loc.name.
+  const [customLabels, setCustomLabels] = useState<Record<string, string>>({});
+  // Per-stop comment shown under the name in the caption (e.g. the arrival day + a note). Blank
+  // falls back to the stop's arrival date.
+  const [customComments, setCustomComments] = useState<Record<string, string>>({});
   const [formatId, setFormatId] = useState(FORMATS[0].id);
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [accentColor, setAccentColor] = useState(DEFAULT_ACCENT);
@@ -279,16 +317,41 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   const previewWidth = Math.round(format.width * previewScale);
   const previewHeight = Math.round(format.height * previewScale);
 
-  // Checked stops, in visit order — used for the name labels and the bottom chain/headline.
+  // The caption text for a stop: its override if set, otherwise its geocoded name.
+  const displayName = (loc: Location) => customLabels[loc.id]?.trim() || loc.name;
+
+  // Day 1 of the trip = its start_date (or, if unset, the earliest stop arrival date).
+  const arrivalDates = locations
+    .map((l) => l.arrival_date)
+    .filter((d): d is string => !!d)
+    .sort();
+  const tripStart = trip.start_date ?? arrivalDates[0] ?? null;
+  const dayNumberFor = (loc: Location): number | null => {
+    if (!loc.arrival_date || !tripStart) return null;
+    const ms = Date.parse(loc.arrival_date) - Date.parse(tripStart);
+    if (Number.isNaN(ms)) return null;
+    return Math.floor(ms / 86_400_000) + 1;
+  };
+  // Default secondary line (used when no comment is typed): "Day N · <date>".
+  const defaultSecondary = (loc: Location): string | null => {
+    const date = formatDate(loc.arrival_date);
+    const day = dayNumberFor(loc);
+    if (day == null || day < 1) return date;
+    return date ? `Day ${day} · ${date}` : `Day ${day}`;
+  };
+  // Secondary caption line: the typed comment, else the Day-N/date default, else nothing.
+  const commentFor = (loc: Location) => customComments[loc.id]?.trim() || defaultSecondary(loc);
+
+  // Checked stops, in visit order — each becomes an equal-size name block, stacked in the caption.
   const includedList = locations.filter((l) => included.has(l.id));
-  const headline = includedList.length
-    ? includedList[includedList.length - 1].name
-    : trip.title;
-  const chain = includedList
-    .slice(0, -1)
-    .map((l) => l.name)
-    .join(' → ');
-  const currentStop = includedList[includedList.length - 1] ?? null;
+  const captionStops: CaptionStop[] = includedList.length
+    ? includedList.map((l) => ({ name: displayName(l), secondary: commentFor(l) }))
+    : [{ name: trip.title, secondary: null }];
+  // Shared name size: full-height for one stop, shrinking as more are stacked so they still fit.
+  const nameSize =
+    captionStops.length <= 1
+      ? 88
+      : Math.max(40, Math.min(74, Math.round(150 / captionStops.length)));
   // "+km added" = the legs that arrive at each checked stop, summed (each checked stop
   // attributes the leg that reaches it). Total km stays the full-trip distance, unchanged.
   const legs = route?.legsKm ?? [];
@@ -320,6 +383,15 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
     if (!trip) return;
     setExporting(true);
     try {
+      // Make sure the web font is actually loaded before capture — otherwise html2canvas
+      // renders the labels/headline in the serif fallback (the "resources not loaded" look).
+      if (typeof document !== 'undefined' && 'fonts' in document) {
+        try {
+          await (document as Document & { fonts: FontFaceSet }).fonts.ready;
+        } catch {
+          /* fonts.ready unsupported — the explicit sans stacks still keep it off serif */
+        }
+      }
       // Wait for the hidden full-resolution map to finish loading + fitting + painting.
       // Without this the capture races map load and grabs the blank default view.
       await new Promise<void>((resolve) => {
@@ -332,14 +404,18 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
       // One more settle tick so marker/label DOM has laid out over the final frame.
       await new Promise((r) => setTimeout(r, 400));
       if (captureRef.current) {
-        const canvas = await html2canvas(captureRef.current, {
+        // Capture via modern-screenshot (SVG foreignObject): the browser renders the DOM itself,
+        // so text centering, fonts and shadows come out exactly as on screen — unlike html2canvas,
+        // which reimplements CSS layout and mis-positioned centered text, flex, and box-shadows.
+        const dataUrl = await domToPng(captureRef.current, {
+          width: format.width,
+          height: format.height,
           scale: 1,
-          useCORS: true,
-          backgroundColor: null,
-          logging: false,
+          // Wait for web fonts to be embedded so the caption never falls back to a system font.
+          font: {},
         });
         const link = document.createElement('a');
-        link.href = canvas.toDataURL('image/png');
+        link.href = dataUrl;
         link.download = `${slugify(trip.title)}-${includedList.length}stops-${format.width}x${format.height}.png`;
         link.click();
       }
@@ -360,8 +436,9 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
           <div>
             <h2 className="text-2xl font-bold tracking-tight">Export — {trip.title}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              The whole trip is always shown — tick the stops to feature, and only they get a name
-              label and count toward the “+km added”
+              The whole trip is always shown — tick the stops to feature. Featured stops get a name
+              label, stack equally in the caption, and count toward the “+km added”. Edit each
+              featured stop’s name and add a comment (arrival day, a note) inline.
             </p>
           </div>
         </div>
@@ -396,32 +473,80 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
                       </button>
                     </div>
                   </div>
-                  <div className="max-h-72 space-y-1 overflow-y-auto rounded-xl border border-border/60 p-1">
+                  <div className="max-h-80 space-y-1 overflow-y-auto rounded-xl border border-border/60 p-1">
                     {locations.map((loc, i) => {
                       const on = included.has(loc.id);
+                      const custom = customLabels[loc.id] ?? '';
+                      const comment = customComments[loc.id] ?? '';
                       return (
-                        <button
-                          type="button"
+                        <div
                           key={loc.id}
-                          onClick={() => toggleStop(loc.id)}
-                          className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors ${
+                          className={`rounded-lg px-1.5 py-1 transition-colors ${
                             on ? 'bg-primary/5' : 'opacity-55 hover:opacity-100'
                           }`}
                         >
-                          <span
-                            className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                              on
-                                ? 'border-primary bg-primary text-primary-foreground'
-                                : 'border-muted-foreground/40'
-                            }`}
-                          >
-                            {on && <Check size={12} strokeWidth={3} />}
-                          </span>
-                          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                            {i + 1}.
-                          </span>
-                          <span className="min-w-0 flex-1 truncate text-sm">{loc.name}</span>
-                        </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => toggleStop(loc.id)}
+                              className="flex shrink-0 items-center gap-2"
+                              title={
+                                on ? 'Featured — click to hide its label' : 'Click to feature this stop'
+                              }
+                            >
+                              <span
+                                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                                  on
+                                    ? 'border-primary bg-primary text-primary-foreground'
+                                    : 'border-muted-foreground/40'
+                                }`}
+                              >
+                                {on && <Check size={12} strokeWidth={3} />}
+                              </span>
+                              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                                {i + 1}.
+                              </span>
+                            </button>
+                            <input
+                              value={custom}
+                              placeholder={loc.name}
+                              onChange={(e) =>
+                                setCustomLabels((prev) => ({ ...prev, [loc.id]: e.target.value }))
+                              }
+                              className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-sm outline-none placeholder:text-muted-foreground/70 focus:bg-background focus:ring-1 focus:ring-ring"
+                            />
+                            {custom.trim() && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCustomLabels((prev) => {
+                                    const next = { ...prev };
+                                    delete next[loc.id];
+                                    return next;
+                                  })
+                                }
+                                className="shrink-0 text-muted-foreground/50 transition-colors hover:text-foreground"
+                                title="Reset to original name"
+                              >
+                                <RotateCcw size={13} />
+                              </button>
+                            )}
+                          </div>
+                          {on && (
+                            <input
+                              value={comment}
+                              placeholder={
+                                defaultSecondary(loc)
+                                  ? `Comment (default: ${defaultSecondary(loc)})`
+                                  : 'Comment — arrival day, a note…'
+                              }
+                              onChange={(e) =>
+                                setCustomComments((prev) => ({ ...prev, [loc.id]: e.target.value }))
+                              }
+                              className="mt-1 ml-[26px] w-[calc(100%-26px)] rounded-md bg-transparent px-1.5 py-1 text-xs text-muted-foreground outline-none placeholder:text-muted-foreground/50 focus:bg-background focus:text-foreground focus:ring-1 focus:ring-ring"
+                            />
+                          )}
+                        </div>
                       );
                     })}
                   </div>
@@ -513,14 +638,14 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
                 mapKey={formatId}
                 locations={locations}
                 labeledIds={labeledIds}
+                labelOverrides={customLabels}
                 routeGeometry={routeGeometry}
                 accentColor={accentColor}
                 theme={theme}
-                chain={chain}
-                headline={headline}
+                captionStops={captionStops}
+                nameSize={nameSize}
                 addedKm={addedKm}
                 totalKm={totalKm}
-                arrivalDate={formatDate(currentStop?.arrival_date ?? null)}
               />
             </div>
           </div>
@@ -536,14 +661,14 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
               mapKey="capture"
               locations={locations}
               labeledIds={labeledIds}
+              labelOverrides={customLabels}
               routeGeometry={routeGeometry}
               accentColor={accentColor}
               theme={theme}
-              chain={chain}
-              headline={headline}
+              captionStops={captionStops}
+              nameSize={nameSize}
               addedKm={addedKm}
               totalKm={totalKm}
-              arrivalDate={formatDate(currentStop?.arrival_date ?? null)}
               onReady={handleCaptureReady}
             />
           </div>

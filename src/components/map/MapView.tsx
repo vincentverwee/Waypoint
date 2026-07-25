@@ -8,6 +8,13 @@ import type { Location } from '@/types';
 const ROUTE_SOURCE_ID = 'route';
 const ROUTE_LAYER_ID = 'route-line';
 
+// Explicit font stack for markers + labels. html2canvas can capture before the app's web font
+// (Inter) is ready, in which case it falls back to the browser default — serif — which is what
+// made the exported labels/headline look like Times. A concrete sans stack keeps them sans even
+// if Inter isn't captured. (The export page also awaits document.fonts.ready before capturing.)
+const SANS_STACK =
+  "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+
 const MARKER_COLORS = ['#4f46e5', '#0ea5e9', '#f59e0b', '#ef4444', '#10b981', '#a855f7'];
 
 export function colorForTrip(tripId: string) {
@@ -58,8 +65,8 @@ interface TripRoute {
 // Marker/label sizing is expressed for a 1080px-wide canvas (the export design width) and
 // scaled down for the small on-screen preview, so both look proportionally identical.
 const DESIGN_MAP_WIDTH = 1080;
-const DOT_AT_DESIGN = 30;
-const LABEL_FONT_AT_DESIGN = 26;
+const DOT_AT_DESIGN = 48;
+const LABEL_FONT_AT_DESIGN = 36;
 
 interface LabelItem {
   loc: Location;
@@ -69,21 +76,32 @@ interface LabelItem {
   h: number;
 }
 
-/** Greedy leader-line label placement: keeps every label on-screen and non-overlapping,
- *  trying below/above/right/left of its dot at growing distances, and drawing a connector
- *  line whenever the label ends up displaced from directly under its marker. */
+/** Greedy leader-line label placement: keeps every label on-screen and clear of other labels,
+ *  the marker dots, and the route line — trying 8 directions around its dot at growing distances,
+ *  and drawing a connector line whenever the label ends up displaced from its marker. Falls back
+ *  to the least-covering spot when nothing is fully clear. */
 function layoutLabels(
   map: maplibregl.Map,
   items: LabelItem[],
   W: number,
   H: number,
   dotRadius: number,
-  bottomInset: number
+  bottomInset: number,
+  markerLngLats: [number, number][],
+  routeLngLats: [number, number][]
 ) {
   const maxY = H - 4 - bottomInset;
   const margin = Math.max(4, dotRadius * 0.4);
   const gap = dotRadius + margin;
   const placed: { x: number; y: number; w: number; h: number }[] = [];
+
+  // Project the obstacle geometry with the *current* view: markers as keep-out circles, and the
+  // route sampled to screen points (OSRM geometry is dense, so point sampling covers the line).
+  const markerPts = markerLngLats.map((ll) => map.project(ll));
+  const routePts: { x: number; y: number }[] = [];
+  const step = Math.max(1, Math.ceil(routeLngLats.length / 400));
+  for (let i = 0; i < routeLngLats.length; i += step) routePts.push(map.project(routeLngLats[i]));
+  const markerKeepout = dotRadius + margin;
 
   const anchored = items
     .map((it) => {
@@ -101,18 +119,48 @@ function layoutLabels(
     a.y < b.y + b.h + margin &&
     a.y + a.h + margin > b.y;
 
+  // Does rect cover a point within radius r? (rect–circle test via nearest point on the rect.)
+  const hitsPoint = (
+    rect: { x: number; y: number; w: number; h: number },
+    px: number,
+    py: number,
+    r: number
+  ) => {
+    const nx = Math.min(Math.max(px, rect.x), rect.x + rect.w);
+    const ny = Math.min(Math.max(py, rect.y), rect.y + rect.h);
+    return (nx - px) ** 2 + (ny - py) ** 2 < r * r;
+  };
+
+  // Candidate cost: overlapping another label weighs most, then covering a marker, then the route.
+  const penalty = (rect: { x: number; y: number; w: number; h: number }) => {
+    let p = 0;
+    for (const q of placed) if (intersects(rect, q)) p += 1000;
+    for (const m of markerPts) if (hitsPoint(rect, m.x, m.y, markerKeepout)) p += 100;
+    for (const r of routePts) if (hitsPoint(rect, r.x, r.y, margin)) p += 6;
+    return p;
+  };
+
   for (const { it, ax, ay } of anchored) {
     const { w, h } = it;
     const candidates: { x: number; y: number }[] = [];
-    for (let ring = 0; ring < 10; ring++) {
-      const off = gap + ring * (h + 6);
+    for (let ring = 0; ring < 12; ring++) {
+      const off = gap + ring * Math.max(h, 28);
+      const diag = off * 0.7071;
       candidates.push({ x: ax - w / 2, y: ay + off }); // below
       candidates.push({ x: ax - w / 2, y: ay - off - h }); // above
       candidates.push({ x: ax + off, y: ay - h / 2 }); // right
       candidates.push({ x: ax - off - w, y: ay - h / 2 }); // left
+      candidates.push({ x: ax + diag, y: ay + diag }); // down-right
+      candidates.push({ x: ax - diag - w, y: ay + diag }); // down-left
+      candidates.push({ x: ax + diag, y: ay - diag - h }); // up-right
+      candidates.push({ x: ax - diag - w, y: ay - diag - h }); // up-left
     }
 
-    let chosen = candidates[0];
+    let chosen = {
+      x: Math.min(Math.max(candidates[0].x, 4), W - w - 4),
+      y: Math.min(Math.max(candidates[0].y, 4), maxY - h),
+    };
+    let best = Infinity;
     for (const c of candidates) {
       const rect = {
         x: Math.min(Math.max(c.x, 4), W - w - 4),
@@ -120,17 +168,22 @@ function layoutLabels(
         w,
         h,
       };
-      if (!placed.some((p) => intersects(rect, p))) {
+      const pen = penalty(rect);
+      if (pen < best) {
+        best = pen;
         chosen = { x: rect.x, y: rect.y };
-        break;
+        if (pen === 0) break;
       }
-      chosen = { x: rect.x, y: rect.y };
     }
 
     const x = Math.min(Math.max(chosen.x, 4), W - w - 4);
     const y = Math.min(Math.max(chosen.y, 4), maxY - h);
     placed.push({ x, y, w, h });
-    it.el.style.transform = `translate(${x}px, ${y}px)`;
+    // Position with left/top, NOT transform:translate. html2canvas (the export renderer)
+    // applies CSS transforms inconsistently to a box vs its border, which detached the accent
+    // border from the pill body in the export. left/top is its most reliably-handled path.
+    it.el.style.left = `${x}px`;
+    it.el.style.top = `${y}px`;
 
     // Connector line from the dot's edge to the nearest point on the label box (skip if the
     // label still sits right over its marker).
@@ -166,6 +219,12 @@ interface MapViewProps {
   /** When set, only markers whose location id is listed get a name tag (overrides `showLabels`).
    *  Lets the export show the whole trip but label only the featured stops. */
   labeledIds?: string[];
+  /** Per-location override for the text shown on a marker's name tag. Falls back to `loc.name`
+   *  when absent/blank. Lets the export caption each featured stop with custom wording. */
+  labelOverrides?: Record<string, string>;
+  /** Pixels to keep clear at the bottom of the canvas (the export's caption scrim). Drives both
+   *  the fit-bounds bottom padding and the label keep-out zone. Falls back to ~32% of height. */
+  reserveBottom?: number;
   /** Show the zoom/compass control. Off for exports so it doesn't appear in the captured image. */
   showControls?: boolean;
   /** Fires on the map's `idle` event after the latest markers/route/fit have painted — the export
@@ -181,6 +240,8 @@ export default function MapView({
   accentColor,
   showLabels = false,
   labeledIds,
+  labelOverrides,
+  reserveBottom,
   showControls = true,
   onReady,
 }: MapViewProps) {
@@ -281,7 +342,14 @@ export default function MapView({
       // NOTE: don't set `position` here — MapLibre's `.maplibregl-marker` class positions the
       // element absolutely and drives it via `transform`. An inline `position` overrides that
       // class and makes every marker fall back into normal flow (they pile up / land off-target).
-      el.style.cssText = `display:flex;align-items:center;justify-content:center;width:${dotSize}px;height:${dotSize}px;border-radius:9999px;border:2px solid white;background:${color};color:white;font-size:${numFont}px;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,0.35);cursor:pointer;`;
+      const borderW = Math.max(2, Math.round(3 * s));
+      // NOTE: no flexbox here. html2canvas (used by the export) doesn't implement flex centering
+      // and blows a width-less flex box up to its parent's width — which is exactly what made the
+      // exported labels stretch edge-to-edge. Center the digit with line-height + text-align.
+      // line-height must equal the *content* height (dot minus the two borders) — using the full
+      // border-box height leaves the line box taller than the content and the digit sits low.
+      const innerH = dotSize - 2 * borderW;
+      el.style.cssText = `box-sizing:border-box;display:block;width:${dotSize}px;height:${dotSize}px;border-radius:9999px;border:${borderW}px solid white;background:${color};color:white;font-family:${SANS_STACK};font-size:${numFont}px;font-weight:700;line-height:${innerH}px;text-align:center;box-shadow:0 ${Math.max(1, Math.round(2 * s))}px ${Math.max(3, Math.round(6 * s))}px rgba(0,0,0,0.35);cursor:pointer;`;
       el.textContent = String(number);
 
       const label = tripLabels?.[loc.trip_id] ?? '';
@@ -309,24 +377,41 @@ export default function MapView({
     const overlay = labelOverlayRef.current;
     const svg = labelSvgRef.current;
     if (overlay && svg && labeledLocs.length > 0) {
-      const pad = Math.round(labelFont * 0.35);
-      const radius = Math.round(labelFont * 0.45);
+      const padY = Math.round(labelFont * 0.42);
+      const padX = Math.round(labelFont * 0.75);
+      const radius = Math.round(labelFont * 0.7);
       const lineColor = accentColor ?? '#4f46e5';
+      const dotColor = accentColor ?? '#4f46e5';
       labelItemsRef.current = labeledLocs.map((loc) => {
         const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         line.setAttribute('stroke', lineColor);
-        line.setAttribute('stroke-width', String(Math.max(1.5, 3 * s)));
+        line.setAttribute('stroke-width', String(Math.max(2, 3.5 * s)));
         line.setAttribute('stroke-linecap', 'round');
         line.style.display = 'none';
         svg.appendChild(line);
 
         const el = document.createElement('div');
-        el.textContent = loc.name;
-        el.style.cssText = `position:absolute;left:0;top:0;will-change:transform;white-space:nowrap;font-size:${labelFont}px;font-weight:700;line-height:1.15;color:#111;background:rgba(255,255,255,0.96);padding:${pad}px ${pad * 2}px;border-radius:${radius}px;box-shadow:0 1px 4px rgba(0,0,0,0.3);`;
+        el.textContent = labelOverrides?.[loc.id]?.trim() || loc.name;
+        // Pill styling kept deliberately html2canvas-safe (the export renderer):
+        //  - display:inline-block + a pinned px width (set in place()) — NOT flex and NOT auto —
+        //    because html2canvas renders width-less positioned boxes at full parent width.
+        //  - a solid all-round border instead of box-shadow / border-left: html2canvas turns
+        //    box-shadows into gray gradient bands and mis-places one-sided borders.
+        const borderW = Math.max(2, Math.round(3 * s));
+        el.style.cssText = `position:absolute;left:0;top:0;box-sizing:border-box;display:inline-block;white-space:nowrap;font-family:${SANS_STACK};font-size:${labelFont}px;font-weight:700;line-height:1.2;letter-spacing:-0.01em;text-align:center;color:#0f172a;background:#ffffff;padding:${padY}px ${padX}px;border-radius:${radius}px;border:${borderW}px solid ${dotColor};`;
         overlay.appendChild(el);
         const rect = el.getBoundingClientRect();
         return { loc, el, line, w: rect.width, h: rect.height };
       });
+
+      // Obstacle geometry for label placement (avoid covering markers + the route line). Kept as
+      // lng/lat here and projected fresh inside layoutLabels on every render (the view can pan/zoom).
+      const markerLngLats: [number, number][] = orderedLocations.map((l) => [l.longitude, l.latitude]);
+      const routeLngLats: [number, number][] = routes?.length
+        ? routes.flatMap((r) => r.geometry.coordinates as [number, number][])
+        : routeGeometry
+          ? (routeGeometry.coordinates as [number, number][])
+          : [];
 
       const isExportLabels = showLabels || labeledIds != null;
       const place = () => {
@@ -337,8 +422,20 @@ export default function MapView({
         const H = ov.clientHeight;
         svg.setAttribute('width', String(W));
         svg.setAttribute('height', String(H));
-        const bottomInset = isExportLabels ? Math.round(H * 0.32) + 40 : 0;
-        layoutLabels(m, labelItemsRef.current, W, H, dotRadius, bottomInset);
+        // Re-measure each pill against its natural (auto) width, then pin that exact width in px.
+        // Two reasons: (1) the web font can finish loading after the pills were created, changing
+        // their size; (2) html2canvas doesn't compute shrink-to-fit width for absolutely-positioned
+        // boxes and would otherwise render them at full parent width (the edge-to-edge stretch).
+        for (const it of labelItemsRef.current) {
+          it.el.style.width = 'auto';
+          const r = it.el.getBoundingClientRect();
+          const w = Math.ceil(r.width);
+          it.el.style.width = `${w}px`;
+          it.w = w;
+          it.h = r.height;
+        }
+        const bottomInset = isExportLabels ? (reserveBottom ?? Math.round(H * 0.32) + 40) : 0;
+        layoutLabels(m, labelItemsRef.current, W, H, dotRadius, bottomInset, markerLngLats, routeLngLats);
       };
 
       let rafPending = false;
@@ -398,7 +495,7 @@ export default function MapView({
       const isExport = showLabels || labeledIds != null;
       const height = containerRef.current?.clientHeight ?? 0;
       const padding = isExport
-        ? { top: 70, left: 70, right: 70, bottom: Math.round(height * 0.32) + 40 }
+        ? { top: 70, left: 70, right: 70, bottom: reserveBottom ?? Math.round(height * 0.32) + 40 }
         : 60;
       map.fitBounds(bounds, { padding, maxZoom: 12, duration: isExport ? 0 : 500 });
     }
@@ -409,7 +506,7 @@ export default function MapView({
       const cb = onReadyRef.current;
       map.once('idle', () => cb());
     }
-  }, [locations, routeGeometry, routes, tripLabels, accentColor, showLabels, labeledIds, loaded]);
+  }, [locations, routeGeometry, routes, tripLabels, accentColor, showLabels, labeledIds, labelOverrides, reserveBottom, loaded]);
 
   return <div ref={containerRef} className="h-full w-full rounded-2xl" />;
 }
