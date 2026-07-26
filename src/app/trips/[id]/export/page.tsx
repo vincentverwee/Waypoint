@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, use } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, use } from 'react';
 import Link from 'next/link';
 import { domToPng } from 'modern-screenshot';
 import { AppShell } from '@/components/layout/AppShell';
@@ -30,11 +30,9 @@ const FORMATS: ExportFormat[] = [
 const DESIGN_WIDTH = 1080;
 const PREVIEW_MAX_WIDTH = 380;
 const DEFAULT_ACCENT = '#4f46e5';
-// Concrete sans stack so html2canvas never falls back to serif if Inter isn't captured in time.
+// Concrete sans stack so the export never falls back to serif if Inter isn't embedded in time.
 const SANS_STACK =
   "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
-// Fallback ceiling in case the off-screen map's `idle` event never fires (network stall etc.).
-const EXPORT_READY_TIMEOUT_MS = 8000;
 
 function formatDate(dateStr: string | null) {
   if (!dateStr) return null;
@@ -222,9 +220,10 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   const [route, setRoute] = useState<RouteResult | null>(null);
   const [exporting, setExporting] = useState(false);
 
-  const captureRef = useRef<HTMLDivElement>(null);
-  // Resolves the promise handleExport awaits — fired by the hidden capture map's onReady.
-  const readyResolveRef = useRef<(() => void) | null>(null);
+  // We capture the on-screen preview itself (already loaded, fitted, with markers/route/labels)
+  // and upscale it to the target resolution — no hidden second map to race, which is what kept
+  // breaking on iOS (blank/unfitted map). What you see in the preview is exactly what exports.
+  const previewRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getTripWithLocations(id).then(({ trip, locations }) => {
@@ -259,11 +258,6 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
       cancelled = true;
     };
   }, [locations]);
-
-  const handleCaptureReady = useCallback(() => {
-    readyResolveRef.current?.();
-    readyResolveRef.current = null;
-  }, []);
 
   // Stable array identity so the map only rebuilds markers when the featured set changes.
   const labeledIds = useMemo(() => [...included], [included]);
@@ -317,19 +311,6 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   }
 
   const format = FORMATS.find((f) => f.id === formatId) ?? FORMATS[0];
-  // The capture stage renders at full export resolution but must sit fully *within* the viewport
-  // (scaled down) so iOS Safari actually composites its WebGL canvas — an element parked off-screen
-  // (left:-9999) or overflowing the viewport is throttled and never finishes painting, so the
-  // capture grabbed a blank, unfitted default view. modern-screenshot still outputs full res
-  // because we pass explicit width/height; the on-screen transform only shrinks the preview.
-  const captureFitScale =
-    typeof window !== 'undefined'
-      ? Math.min(
-          0.6,
-          (window.innerWidth - 24) / format.width,
-          (window.innerHeight - 24) / format.height
-        )
-      : 0.3;
   const previewScale = Math.min(1, PREVIEW_MAX_WIDTH / format.width);
   const previewWidth = Math.round(format.width * previewScale);
   const previewHeight = Math.round(format.height * previewScale);
@@ -397,11 +378,10 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   }
 
   async function handleExport() {
-    if (!trip) return;
+    if (!trip || !previewRef.current) return;
     setExporting(true);
     try {
-      // Make sure the web font is actually loaded before capture — otherwise the labels/headline
-      // can render in the fallback font (the "resources not loaded" look).
+      // Make sure the web font is loaded so captions don't fall back to a system font.
       if (typeof document !== 'undefined' && 'fonts' in document) {
         try {
           await (document as Document & { fonts: FontFaceSet }).fonts.ready;
@@ -409,34 +389,28 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
           /* fonts.ready unsupported — the explicit sans stacks still keep it off serif */
         }
       }
-      // Wait for the hidden full-resolution map to finish loading + fitting + painting.
-      // Without this the capture races map load and grabs the blank default view.
-      await new Promise<void>((resolve) => {
-        readyResolveRef.current = resolve;
-        setTimeout(() => {
-          readyResolveRef.current = null;
-          resolve();
-        }, EXPORT_READY_TIMEOUT_MS);
+      // Small settle so the preview map has painted its latest frame before we read its canvas.
+      await new Promise((r) => setTimeout(r, 350));
+
+      // Capture the on-screen preview element and upscale it to the target format resolution.
+      // modern-screenshot's `scale` multiplies the output; text/pills/leader lines re-rasterize
+      // crisply from computed styles, and the MapLibre canvas (preserveDrawingBuffer:true) is read
+      // via toDataURL. On a phone the preview's canvas buffer is already ~preview×devicePixelRatio
+      // (~1000px+), so the 1080 formats come out effectively 1:1.
+      const scale = format.width / previewWidth;
+      const dataUrl = await domToPng(previewRef.current, {
+        width: previewWidth,
+        height: previewHeight,
+        scale,
+        // Fill behind the preview's rounded corners so they don't export as transparent notches.
+        backgroundColor: theme === 'dark' ? '#000000' : '#ffffff',
+        // Wait for web fonts to be embedded so the caption never falls back to a system font.
+        font: {},
       });
-      // One more settle tick so marker/label DOM has laid out over the final frame (a touch
-      // longer than desktop needs, to cover slower mobile paints).
-      await new Promise((r) => setTimeout(r, 600));
-      if (captureRef.current) {
-        // Capture via modern-screenshot (SVG foreignObject): the browser renders the DOM itself,
-        // so text centering, fonts and shadows come out exactly as on screen — unlike html2canvas,
-        // which reimplements CSS layout and mis-positioned centered text, flex, and box-shadows.
-        const dataUrl = await domToPng(captureRef.current, {
-          width: format.width,
-          height: format.height,
-          scale: 1,
-          // Wait for web fonts to be embedded so the caption never falls back to a system font.
-          font: {},
-        });
-        const link = document.createElement('a');
-        link.href = dataUrl;
-        link.download = `${slugify(trip.title)}-${includedList.length}stops-${format.width}x${format.height}.png`;
-        link.click();
-      }
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `${slugify(trip.title)}-${includedList.length}stops-${format.width}x${format.height}.png`;
+      link.click();
     } finally {
       setExporting(false);
     }
@@ -649,7 +623,8 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
           </div>
 
           <div className="flex items-start justify-center">
-            <div style={{ width: previewWidth, height: previewHeight }}>
+            {/* This preview IS the capture source (see handleExport) — WYSIWYG export. */}
+            <div ref={previewRef} style={{ width: previewWidth, height: previewHeight }}>
               <ExportStage
                 width={previewWidth}
                 height={previewHeight}
@@ -670,62 +645,6 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
         </div>
       </div>
 
-      {exporting && (
-        <>
-          {/* Full-resolution capture stage — kept on-screen (scaled to fit the viewport) so iOS
-              Safari composites its WebGL canvas and the map's `idle` actually fires. It's captured
-              at full res via modern-screenshot; the opaque cover below hides it from the user. */}
-          <div
-            aria-hidden
-            style={{
-              position: 'fixed',
-              top: 0,
-              left: 0,
-              zIndex: 40,
-              transform: `scale(${captureFitScale})`,
-              transformOrigin: 'top left',
-              pointerEvents: 'none',
-            }}
-          >
-            <div ref={captureRef}>
-              <ExportStage
-                width={format.width}
-                height={format.height}
-                mapKey="capture"
-                locations={locations}
-                labeledIds={labeledIds}
-                labelOverrides={customLabels}
-                routeGeometry={routeGeometry}
-                accentColor={accentColor}
-                theme={theme}
-                captionStops={captionStops}
-                nameSize={nameSize}
-                addedKm={addedKm}
-                totalKm={totalKm}
-                pixelRatio={1}
-                onReady={handleCaptureReady}
-              />
-            </div>
-          </div>
-          {/* Opaque cover with progress, layered above the capture stage. */}
-          <div
-            className="bg-background"
-            style={{
-              position: 'fixed',
-              inset: 0,
-              zIndex: 50,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 16,
-            }}
-          >
-            <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" />
-            <p className="text-sm font-medium text-muted-foreground">Rendering image…</p>
-          </div>
-        </>
-      )}
     </AppShell>
   );
 }
