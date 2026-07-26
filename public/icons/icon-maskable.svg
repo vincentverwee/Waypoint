@@ -1,0 +1,27 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4f46e5"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <filter id="ds" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- full-bleed background so mask crops cleanly -->
+  <rect width="512" height="512" fill="url(#bg)"/>
+
+  <!-- content scaled to ~76% and centered inside the maskable safe zone -->
+  <g transform="translate(256 256) scale(0.76) translate(-256 -256)">
+    <path d="M150 372 C 150 300, 240 300, 256 236 C 268 190, 340 196, 360 150"
+          stroke="#ffffff" stroke-opacity="0.55" stroke-width="14"
+          stroke-linecap="round" stroke-dasharray="4 34" fill="none"/>
+    <circle cx="150" cy="372" r="26" fill="#ffffff" filter="url(#ds)"/>
+    <circle cx="150" cy="372" r="11" fill="#4f46e5"/>
+    <g filter="url(#ds)">
+      <path d="M360 92 C 306 92, 262 136, 262 190 C 262 258, 360 336, 360 336 C 360 336, 458 258, 458 190 C 458 136, 414 92, 360 92 Z" fill="#ffffff"/>
+    </g>
+    <circle cx="360" cy="188" r="38" fill="url(#bg)"/>
+  </g>
+</svg>

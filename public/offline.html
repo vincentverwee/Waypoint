@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <title>Offline · Waypoint</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        min-height: 100dvh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background:
+          radial-gradient(1200px 600px at 50% -10%, #1b1440 0%, transparent 60%),
+          #0d1117;
+        color: #e6e8ee;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+        text-align: center;
+      }
+      .card {
+        max-width: 380px;
+        width: 100%;
+      }
+      .icon {
+        width: 84px;
+        height: 84px;
+        border-radius: 22px;
+        margin: 0 auto 24px;
+        display: block;
+        box-shadow: 0 12px 40px rgba(79, 70, 229, 0.35);
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      p {
+        margin: 0 0 28px;
+        font-size: 15px;
+        line-height: 1.55;
+        color: #9aa1af;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 600;
+        font-size: 15px;
+        color: #fff;
+        padding: 12px 22px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #4f46e5, #7c3aed);
+        transition:
+          transform 0.15s ease,
+          filter 0.15s ease;
+      }
+      button:hover {
+        filter: brightness(1.08);
+      }
+      button:active {
+        transform: scale(0.97);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <img class="icon" src="/icons/icon-192.png" alt="Waypoint" width="84" height="84" />
+      <h1>You're offline</h1>
+      <p>
+        Waypoint can't reach the network right now. Pages and maps you've already opened are still
+        available — reconnect to load anything new.
+      </p>
+      <button type="button" onclick="location.reload()">Try again</button>
+    </main>
+    <script>
+      // Auto-recover: reload as soon as the connection comes back.
+      window.addEventListener('online', () => location.reload());
+    </script>
+  </body>
+</html>

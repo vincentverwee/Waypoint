@@ -34,8 +34,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# PWA (generated at build time)
-/public/sw.js
+# PWA — sw.js is hand-written source (committed), not build-generated.
+# Keep ignoring any Workbox/Serwist artifacts in case a tool is added later.
 /public/workbox-*.js
 /public/worker-*.js
 /public/fallback-*.js
