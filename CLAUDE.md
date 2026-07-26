@@ -219,8 +219,8 @@ npm run dev
 - [x] **Icons** — generated from `public/icons/icon.svg` (route/pin motif on the indigo→violet accent gradient) via the `sharp` bundled with Next: `icon-192/512`, `icon-maskable-192/512` (content scaled to the maskable safe zone, `icon-maskable.svg`), `apple-touch-icon` (180), `favicon.ico` (16/32/48) + `favicon-16/32`. Regen script was a throwaway (`__gen-icons.mjs`, deleted).
 - [x] `offline.html` — self-contained branded fallback (inline CSS/JS, auto-reloads on `online` event). `manifest.webmanifest` refined: `id`/`scope`/`lang`/`categories`, separate `any` vs `maskable` icon entries. `layout.tsx` `metadata.icons` wired.
 - [x] Production build verified (`npm run build` — Next 16 Turbopack, TS clean).
-- [ ] **GitHub push** — no git remote configured yet; needs the user's repo + auth.
-- [ ] **Vercel deploy** — needs the user's Vercel account; set `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` env vars there (app falls back to mock data if unset).
+- [x] **GitHub push** — repo `github.com/vincentverwee/Waypoint`, branch renamed `master` → `main` (matches convention + Vercel default). Remote `origin` set, M6 committed and pushed.
+- [ ] **Vercel deploy** — needs the user's Vercel account; import the repo (auto-detects Next.js), set `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` env vars (app falls back to mock data if unset), deploy. PWA/service worker is production-only, so it only activates on the live Vercel URL, not `localhost` dev.
 
 ---
 
