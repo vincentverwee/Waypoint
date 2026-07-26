@@ -20,6 +20,7 @@ interface MapWrapperProps {
   labelOverrides?: Record<string, string>;
   reserveBottom?: number;
   showControls?: boolean;
+  pixelRatio?: number;
   onReady?: () => void;
 }
 
@@ -35,6 +36,7 @@ export function MapWrapper({
   labelOverrides,
   reserveBottom,
   showControls,
+  pixelRatio,
   onReady,
 }: MapWrapperProps) {
   return (
@@ -50,6 +52,7 @@ export function MapWrapper({
         labelOverrides={labelOverrides}
         reserveBottom={reserveBottom}
         showControls={showControls}
+        pixelRatio={pixelRatio}
         onReady={onReady}
       />
     </div>

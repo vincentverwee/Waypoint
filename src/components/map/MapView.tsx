@@ -227,8 +227,13 @@ interface MapViewProps {
   reserveBottom?: number;
   /** Show the zoom/compass control. Off for exports so it doesn't appear in the captured image. */
   showControls?: boolean;
+  /** Forces the WebGL canvas' pixel ratio instead of the device default. The export/capture map
+   *  passes `1` so its buffer equals the (already full-resolution) container — a 1920px container
+   *  at the phone's devicePixelRatio 2–3 would otherwise blow past iOS's ~4096px WebGL canvas limit
+   *  and render only a partial strip. */
+  pixelRatio?: number;
   /** Fires on the map's `idle` event after the latest markers/route/fit have painted — the export
-   *  page awaits this before capturing the off-screen full-resolution map. */
+   *  page awaits this before capturing the full-resolution map. */
   onReady?: () => void;
 }
 
@@ -243,6 +248,7 @@ export default function MapView({
   labelOverrides,
   reserveBottom,
   showControls = true,
+  pixelRatio,
   onReady,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -269,8 +275,10 @@ export default function MapView({
       center: [4.4, 50.85],
       zoom: 5,
       // Without this, WebGL discards its drawing buffer after each compositor swap, so a
-      // later html2canvas capture (export page) can sample a blank frame from the canvas.
+      // later modern-screenshot capture (export page) can sample a blank frame from the canvas.
       preserveDrawingBuffer: true,
+      // Cap the buffer for the export map (passes 1) so it stays within iOS's WebGL canvas limit.
+      ...(pixelRatio != null ? { pixelRatio } : {}),
     });
     if (showControls) map.addControl(new maplibregl.NavigationControl(), 'top-right');
     map.on('load', () => {
@@ -309,7 +317,7 @@ export default function MapView({
       mapRef.current = null;
       setLoaded(false);
     };
-  }, [showControls]);
+  }, [showControls, pixelRatio]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -400,8 +408,11 @@ export default function MapView({
         const borderW = Math.max(2, Math.round(3 * s));
         el.style.cssText = `position:absolute;left:0;top:0;box-sizing:border-box;display:inline-block;white-space:nowrap;font-family:${SANS_STACK};font-size:${labelFont}px;font-weight:700;line-height:1.2;letter-spacing:-0.01em;text-align:center;color:#0f172a;background:#ffffff;padding:${padY}px ${padX}px;border-radius:${radius}px;border:${borderW}px solid ${dotColor};`;
         overlay.appendChild(el);
-        const rect = el.getBoundingClientRect();
-        return { loc, el, line, w: rect.width, h: rect.height };
+        // offsetWidth/Height, NOT getBoundingClientRect: the export capture stage is displayed
+        // under a CSS `transform: scale()` (to keep the full-res map on-screen so iOS composites
+        // it), which scales getBoundingClientRect but not offsetWidth — so offset* gives the true
+        // untransformed 1080/1920-space size the overlay math needs.
+        return { loc, el, line, w: el.offsetWidth, h: el.offsetHeight };
       });
 
       // Obstacle geometry for label placement (avoid covering markers + the route line). Kept as
@@ -428,11 +439,12 @@ export default function MapView({
         // boxes and would otherwise render them at full parent width (the edge-to-edge stretch).
         for (const it of labelItemsRef.current) {
           it.el.style.width = 'auto';
-          const r = it.el.getBoundingClientRect();
-          const w = Math.ceil(r.width);
+          // offsetWidth/Height (untransformed layout size) — see the note where these pills are
+          // created: the capture stage renders under a `transform: scale()` on iOS.
+          const w = it.el.offsetWidth;
           it.el.style.width = `${w}px`;
           it.w = w;
-          it.h = r.height;
+          it.h = it.el.offsetHeight;
         }
         const bottomInset = isExportLabels ? (reserveBottom ?? Math.round(H * 0.32) + 40) : 0;
         layoutLabels(m, labelItemsRef.current, W, H, dotRadius, bottomInset, markerLngLats, routeLngLats);

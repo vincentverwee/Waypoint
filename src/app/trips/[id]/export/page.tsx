@@ -75,6 +75,8 @@ interface ExportStageProps {
   nameSize: number;
   addedKm: number | null;
   totalKm: number | null;
+  /** Forced canvas pixel ratio for the map — the capture stage passes 1 (see handleExport). */
+  pixelRatio?: number;
   onReady?: () => void;
 }
 
@@ -92,6 +94,7 @@ function ExportStage({
   nameSize,
   addedKm,
   totalKm,
+  pixelRatio,
   onReady,
 }: ExportStageProps) {
   // Overlay typography is sized relative to a 1080px-wide design so the small on-screen
@@ -122,6 +125,7 @@ function ExportStage({
         labelOverrides={labelOverrides}
         reserveBottom={reserveBottom}
         showControls={false}
+        pixelRatio={pixelRatio}
         onReady={onReady}
       />
       <div
@@ -313,6 +317,19 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   }
 
   const format = FORMATS.find((f) => f.id === formatId) ?? FORMATS[0];
+  // The capture stage renders at full export resolution but must sit fully *within* the viewport
+  // (scaled down) so iOS Safari actually composites its WebGL canvas — an element parked off-screen
+  // (left:-9999) or overflowing the viewport is throttled and never finishes painting, so the
+  // capture grabbed a blank, unfitted default view. modern-screenshot still outputs full res
+  // because we pass explicit width/height; the on-screen transform only shrinks the preview.
+  const captureFitScale =
+    typeof window !== 'undefined'
+      ? Math.min(
+          0.6,
+          (window.innerWidth - 24) / format.width,
+          (window.innerHeight - 24) / format.height
+        )
+      : 0.3;
   const previewScale = Math.min(1, PREVIEW_MAX_WIDTH / format.width);
   const previewWidth = Math.round(format.width * previewScale);
   const previewHeight = Math.round(format.height * previewScale);
@@ -383,8 +400,8 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
     if (!trip) return;
     setExporting(true);
     try {
-      // Make sure the web font is actually loaded before capture — otherwise html2canvas
-      // renders the labels/headline in the serif fallback (the "resources not loaded" look).
+      // Make sure the web font is actually loaded before capture — otherwise the labels/headline
+      // can render in the fallback font (the "resources not loaded" look).
       if (typeof document !== 'undefined' && 'fonts' in document) {
         try {
           await (document as Document & { fonts: FontFaceSet }).fonts.ready;
@@ -401,8 +418,9 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
           resolve();
         }, EXPORT_READY_TIMEOUT_MS);
       });
-      // One more settle tick so marker/label DOM has laid out over the final frame.
-      await new Promise((r) => setTimeout(r, 400));
+      // One more settle tick so marker/label DOM has laid out over the final frame (a touch
+      // longer than desktop needs, to cover slower mobile paints).
+      await new Promise((r) => setTimeout(r, 600));
       if (captureRef.current) {
         // Capture via modern-screenshot (SVG foreignObject): the browser renders the DOM itself,
         // so text centering, fonts and shadows come out exactly as on screen — unlike html2canvas,
@@ -653,26 +671,60 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
       </div>
 
       {exporting && (
-        <div style={{ position: 'fixed', left: -9999, top: 0 }}>
-          <div ref={captureRef}>
-            <ExportStage
-              width={format.width}
-              height={format.height}
-              mapKey="capture"
-              locations={locations}
-              labeledIds={labeledIds}
-              labelOverrides={customLabels}
-              routeGeometry={routeGeometry}
-              accentColor={accentColor}
-              theme={theme}
-              captionStops={captionStops}
-              nameSize={nameSize}
-              addedKm={addedKm}
-              totalKm={totalKm}
-              onReady={handleCaptureReady}
-            />
+        <>
+          {/* Full-resolution capture stage — kept on-screen (scaled to fit the viewport) so iOS
+              Safari composites its WebGL canvas and the map's `idle` actually fires. It's captured
+              at full res via modern-screenshot; the opaque cover below hides it from the user. */}
+          <div
+            aria-hidden
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              zIndex: 40,
+              transform: `scale(${captureFitScale})`,
+              transformOrigin: 'top left',
+              pointerEvents: 'none',
+            }}
+          >
+            <div ref={captureRef}>
+              <ExportStage
+                width={format.width}
+                height={format.height}
+                mapKey="capture"
+                locations={locations}
+                labeledIds={labeledIds}
+                labelOverrides={customLabels}
+                routeGeometry={routeGeometry}
+                accentColor={accentColor}
+                theme={theme}
+                captionStops={captionStops}
+                nameSize={nameSize}
+                addedKm={addedKm}
+                totalKm={totalKm}
+                pixelRatio={1}
+                onReady={handleCaptureReady}
+              />
+            </div>
           </div>
-        </div>
+          {/* Opaque cover with progress, layered above the capture stage. */}
+          <div
+            className="bg-background"
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 50,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 16,
+            }}
+          >
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" />
+            <p className="text-sm font-medium text-muted-foreground">Rendering image…</p>
+          </div>
+        </>
       )}
     </AppShell>
   );
