@@ -214,13 +214,13 @@ npm run dev
 - [x] **Tags avoid covering markers + route.** `layoutLabels` now takes all markers (keep-out circles) and the route (sampled screen points) as obstacles and scores 8 directions × 12 distances per label, picking the least-covering spot (overlap-another-label ≫ cover-marker ≫ cover-route). Obstacle geometry passed as lng/lat and projected fresh each render.
 - Note: several `// html2canvas ...` comments in `MapView.tsx` now over-attribute the CSS choices to html2canvas; the choices are still valid under `modern-screenshot` (which renders natively), just no longer *required*. Harmless; not worth the churn to reword.
 
-### Milestone 6 — PWA + Deployment (in progress)
+### ✅ Milestone 6 — PWA + Deployment
 - [x] **Full PWA with offline support** — hand-rolled service worker (`public/sw.js`), **not** `next-pwa`/Serwist (the webpack-based plugins are a compatibility risk against Next 16 + Turbopack). Strategies per request type: navigations → network-first w/ `offline.html` fallback; `/_next/static` & `/_next/image` → cache-first (content-hashed, immutable); `tiles.openfreemap.org` map tiles → stale-while-revalidate (capped 300); OSRM + Supabase → network-first w/ cache backup; Nominatim geocoding → bypassed (live typeahead, never stale). Caches versioned via `SW_VERSION`, old caches purged on `activate`. Registered client-side by `src/components/shared/ServiceWorkerRegistration.tsx` (production only — a SW in dev fights Turbopack HMR), mounted in `layout.tsx`.
 - [x] **Icons** — generated from `public/icons/icon.svg` (route/pin motif on the indigo→violet accent gradient) via the `sharp` bundled with Next: `icon-192/512`, `icon-maskable-192/512` (content scaled to the maskable safe zone, `icon-maskable.svg`), `apple-touch-icon` (180), `favicon.ico` (16/32/48) + `favicon-16/32`. Regen script was a throwaway (`__gen-icons.mjs`, deleted).
 - [x] `offline.html` — self-contained branded fallback (inline CSS/JS, auto-reloads on `online` event). `manifest.webmanifest` refined: `id`/`scope`/`lang`/`categories`, separate `any` vs `maskable` icon entries. `layout.tsx` `metadata.icons` wired.
 - [x] Production build verified (`npm run build` — Next 16 Turbopack, TS clean).
 - [x] **GitHub push** — repo `github.com/vincentverwee/Waypoint`, branch renamed `master` → `main` (matches convention + Vercel default). Remote `origin` set, M6 committed and pushed.
-- [ ] **Vercel deploy** — needs the user's Vercel account; import the repo (auto-detects Next.js), set `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` env vars (app falls back to mock data if unset), deploy. PWA/service worker is production-only, so it only activates on the live Vercel URL, not `localhost` dev.
+- [x] **Vercel deploy** — repo imported to Vercel (auto-detected Next.js), `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` env vars set, deployed live. PWA/service worker is production-only, so it only activates on the live Vercel URL, not `localhost` dev.
 
 ---
 
