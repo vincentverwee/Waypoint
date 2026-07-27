@@ -10,6 +10,13 @@ const ROUTE_SOURCE_ID = 'route';
 const ROUTE_LAYER_ID = 'route-line';
 const DOTS_SOURCE_ID = 'stop-dots';
 const DOTS_LAYER_ID = 'stop-dots-layer';
+// Nested-band widths for overlapping trip routes: each trip gets a distinct line width so that
+// where routes share a road they nest inside one another (all centered on the road, no offset →
+// no warping) and every trip's color stays visible. Widest is drawn first (underneath).
+const ROUTE_WIDTH_TOP = 3; // narrowest, drawn on top (innermost visible band)
+const ROUTE_WIDTH_STEP = 3; // width added per rank below the top
+const ROUTE_WIDTH_MAX = 15; // cap so many trips don't produce an absurdly fat base line
+const SINGLE_ROUTE_WIDTH = 4; // single-trip views / exports keep the original constant width
 
 // Explicit font stack for markers + labels. html2canvas can capture before the app's web font
 // (Inter) is ready, in which case it falls back to the browser default — serif — which is what
@@ -488,17 +495,35 @@ export default function MapView({
       place();
     }
 
-    // Routes are drawn at their true position (no pixel offset — that warped the lines off the
-    // roads at low zoom). Distinct per-trip colors mean overlapping routes may touch, but each
-    // trip's color still reads wherever its path isn't exactly coincident with another's.
-    const routeFeatures: GeoJSON.Feature[] = routes?.length
-      ? routes.map((r) => ({
-          type: 'Feature',
-          properties: { color: resolveColor(r.tripId) },
+    // Routes stay at their TRUE position (no perpendicular offset — that warped lines off the roads
+    // at low zoom). To keep every trip visible where routes overlap, give each route a distinct
+    // width so they nest: the widest is drawn first (underneath) and the narrowest on top, all
+    // centered on the road, so a shared road reads as one line with the colors nested across it.
+    const rankedRoutes = routes?.length
+      ? routes.map((r, i) => ({
+          color: resolveColor(r.tripId),
           geometry: r.geometry,
+          width: Math.min(ROUTE_WIDTH_MAX, ROUTE_WIDTH_TOP + (routes.length - 1 - i) * ROUTE_WIDTH_STEP),
         }))
+      : [];
+    const routeFeatures: GeoJSON.Feature[] = routes?.length
+      ? // widest first → drawn underneath; narrowest last → drawn on top (innermost band)
+        [...rankedRoutes]
+          .sort((a, b) => b.width - a.width)
+          .map((r) => ({
+            type: 'Feature',
+            // opacity 1 so nested bands show crisp colors instead of muddy blends
+            properties: { color: r.color, width: r.width, opacity: 1 },
+            geometry: r.geometry,
+          }))
       : routeGeometry
-        ? [{ type: 'Feature', properties: { color: accentColor ?? '#4f46e5' }, geometry: routeGeometry }]
+        ? [
+            {
+              type: 'Feature',
+              properties: { color: accentColor ?? '#4f46e5', width: SINGLE_ROUTE_WIDTH, opacity: 0.9 },
+              geometry: routeGeometry,
+            },
+          ]
         : [];
 
     const existingSource = map.getSource(ROUTE_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
@@ -513,7 +538,11 @@ export default function MapView({
           type: 'line',
           source: ROUTE_SOURCE_ID,
           layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 'line-color': ['get', 'color'], 'line-width': 4, 'line-opacity': 0.9 },
+          paint: {
+            'line-color': ['get', 'color'],
+            'line-width': ['get', 'width'],
+            'line-opacity': ['get', 'opacity'],
+          },
         });
       }
     } else if (existingSource) {
