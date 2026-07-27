@@ -10,9 +10,6 @@ const ROUTE_SOURCE_ID = 'route';
 const ROUTE_LAYER_ID = 'route-line';
 const DOTS_SOURCE_ID = 'stop-dots';
 const DOTS_LAYER_ID = 'stop-dots-layer';
-// Perpendicular pixel gap between overlapping trip routes so they run side-by-side (and both stay
-// visible) instead of one hiding the other where they share a road.
-const ROUTE_OFFSET_GAP = 3.5;
 
 // Explicit font stack for markers + labels. html2canvas can capture before the app's web font
 // (Inter) is ready, in which case it falls back to the browser default — serif — which is what
@@ -491,19 +488,17 @@ export default function MapView({
       place();
     }
 
-    // Spread multiple routes perpendicular to their direction (symmetric around 0) so overlapping
-    // trips run side-by-side and both stay visible instead of one covering the other.
+    // Routes are drawn at their true position (no pixel offset — that warped the lines off the
+    // roads at low zoom). Distinct per-trip colors mean overlapping routes may touch, but each
+    // trip's color still reads wherever its path isn't exactly coincident with another's.
     const routeFeatures: GeoJSON.Feature[] = routes?.length
-      ? routes.map((r, i) => ({
+      ? routes.map((r) => ({
           type: 'Feature',
-          properties: {
-            color: resolveColor(r.tripId),
-            offset: (i - (routes.length - 1) / 2) * ROUTE_OFFSET_GAP,
-          },
+          properties: { color: resolveColor(r.tripId) },
           geometry: r.geometry,
         }))
       : routeGeometry
-        ? [{ type: 'Feature', properties: { color: accentColor ?? '#4f46e5', offset: 0 }, geometry: routeGeometry }]
+        ? [{ type: 'Feature', properties: { color: accentColor ?? '#4f46e5' }, geometry: routeGeometry }]
         : [];
 
     const existingSource = map.getSource(ROUTE_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
@@ -518,12 +513,7 @@ export default function MapView({
           type: 'line',
           source: ROUTE_SOURCE_ID,
           layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': ['get', 'color'],
-            'line-width': 4,
-            'line-opacity': 0.9,
-            'line-offset': ['get', 'offset'],
-          },
+          paint: { 'line-color': ['get', 'color'], 'line-width': 4, 'line-opacity': 0.9 },
         });
       }
     } else if (existingSource) {
