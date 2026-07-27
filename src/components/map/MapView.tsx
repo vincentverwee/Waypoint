@@ -15,7 +15,19 @@ const ROUTE_LAYER_ID = 'route-line';
 const SANS_STACK =
   "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
-const MARKER_COLORS = ['#4f46e5', '#0ea5e9', '#f59e0b', '#ef4444', '#10b981', '#a855f7'];
+// Validated categorical palette (8 hues, fixed order — the order itself is the CVD-safety
+// mechanism, not cosmetic) so multi-trip views (dashboard, world map) stay distinguishable
+// well past the old 6-color set before two trips share a hue.
+const MARKER_COLORS = [
+  '#2a78d6', // blue
+  '#eb6834', // orange
+  '#1baf7a', // aqua
+  '#eda100', // yellow
+  '#e87ba4', // magenta
+  '#008300', // green
+  '#4a3aa7', // violet
+  '#e34948', // red
+];
 
 export function colorForTrip(tripId: string) {
   let hash = 0;
@@ -212,6 +224,10 @@ interface MapViewProps {
   routes?: TripRoute[];
   /** Optional label shown per-marker, e.g. the trip title when plotting multiple trips together. */
   tripLabels?: Record<string, string>;
+  /** Draw numbered stop markers/pins. Off for the dashboard's combined multi-trip map, where
+   *  markers from every trip overlapping got visually cluttered — the colored route lines alone
+   *  are enough to tell trips apart there. On everywhere else (single-trip views, exports). */
+  showMarkers?: boolean;
   /** Overrides per-trip marker/route coloring with one fixed color — for single-trip exports. */
   accentColor?: string;
   /** Renders each marker's name as a permanently visible tag instead of only in a click popup — for exports. */
@@ -242,6 +258,7 @@ export default function MapView({
   routeGeometry = null,
   routes,
   tripLabels,
+  showMarkers = true,
   accentColor,
   showLabels = false,
   labeledIds,
@@ -341,31 +358,35 @@ export default function MapView({
     const seenPerTrip = new Map<string, number>();
 
     markersRef.current.forEach((m) => m.remove());
-    markersRef.current = orderedLocations.map((loc) => {
-      const number = (seenPerTrip.get(loc.trip_id) ?? 0) + 1;
-      seenPerTrip.set(loc.trip_id, number);
+    markersRef.current = showMarkers
+      ? orderedLocations.map((loc) => {
+          const number = (seenPerTrip.get(loc.trip_id) ?? 0) + 1;
+          seenPerTrip.set(loc.trip_id, number);
 
-      const color = accentColor ?? (tripLabels ? colorForTrip(loc.trip_id) : '#4f46e5');
-      const el = document.createElement('div');
-      // NOTE: don't set `position` here — MapLibre's `.maplibregl-marker` class positions the
-      // element absolutely and drives it via `transform`. An inline `position` overrides that
-      // class and makes every marker fall back into normal flow (they pile up / land off-target).
-      const borderW = Math.max(2, Math.round(3 * s));
-      // NOTE: no flexbox here. html2canvas (used by the export) doesn't implement flex centering
-      // and blows a width-less flex box up to its parent's width — which is exactly what made the
-      // exported labels stretch edge-to-edge. Center the digit with line-height + text-align.
-      // line-height must equal the *content* height (dot minus the two borders) — using the full
-      // border-box height leaves the line box taller than the content and the digit sits low.
-      const innerH = dotSize - 2 * borderW;
-      el.style.cssText = `box-sizing:border-box;display:block;width:${dotSize}px;height:${dotSize}px;border-radius:9999px;border:${borderW}px solid white;background:${color};color:white;font-family:${SANS_STACK};font-size:${numFont}px;font-weight:700;line-height:${innerH}px;text-align:center;box-shadow:0 ${Math.max(1, Math.round(2 * s))}px ${Math.max(3, Math.round(6 * s))}px rgba(0,0,0,0.35);cursor:pointer;`;
-      el.textContent = String(number);
+          const color = accentColor ?? (tripLabels ? colorForTrip(loc.trip_id) : '#4f46e5');
+          const el = document.createElement('div');
+          // NOTE: don't set `position` here — MapLibre's `.maplibregl-marker` class positions the
+          // element absolutely and drives it via `transform`. An inline `position` overrides that
+          // class and makes every marker fall back into normal flow (they pile up / land off-target).
+          const borderW = Math.max(2, Math.round(3 * s));
+          // NOTE: no flexbox here. html2canvas (used by the export) doesn't implement flex centering
+          // and blows a width-less flex box up to its parent's width — which is exactly what made the
+          // exported labels stretch edge-to-edge. Center the digit with line-height + text-align.
+          // line-height must equal the *content* height (dot minus the two borders) — using the full
+          // border-box height leaves the line box taller than the content and the digit sits low.
+          const innerH = dotSize - 2 * borderW;
+          el.style.cssText = `box-sizing:border-box;display:block;width:${dotSize}px;height:${dotSize}px;border-radius:9999px;border:${borderW}px solid white;background:${color};color:white;font-family:${SANS_STACK};font-size:${numFont}px;font-weight:700;line-height:${innerH}px;text-align:center;box-shadow:0 ${Math.max(1, Math.round(2 * s))}px ${Math.max(3, Math.round(6 * s))}px rgba(0,0,0,0.35);cursor:pointer;`;
+          el.textContent = String(number);
 
-      const label = tripLabels?.[loc.trip_id] ?? '';
-      return new maplibregl.Marker({ element: el })
-        .setLngLat([loc.longitude, loc.latitude])
-        .setPopup(new maplibregl.Popup({ offset: 16 }).setDOMContent(buildPopupContent(loc, label)))
-        .addTo(map);
-    });
+          const label = tripLabels?.[loc.trip_id] ?? '';
+          return new maplibregl.Marker({ element: el })
+            .setLngLat([loc.longitude, loc.latitude])
+            .setPopup(
+              new maplibregl.Popup({ offset: 16 }).setDOMContent(buildPopupContent(loc, label))
+            )
+            .addTo(map);
+        })
+      : [];
 
     // Name tags live in a separate overlay (not glued under each dot) so they can be laid out
     // to never overlap, with a leader line back to the marker when displaced.
@@ -518,7 +539,7 @@ export default function MapView({
       const cb = onReadyRef.current;
       map.once('idle', () => cb());
     }
-  }, [locations, routeGeometry, routes, tripLabels, accentColor, showLabels, labeledIds, labelOverrides, reserveBottom, loaded]);
+  }, [locations, routeGeometry, routes, tripLabels, showMarkers, accentColor, showLabels, labeledIds, labelOverrides, reserveBottom, loaded]);
 
   return <div ref={containerRef} className="h-full w-full rounded-2xl" />;
 }

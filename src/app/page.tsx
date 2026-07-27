@@ -33,6 +33,7 @@ export default async function DashboardPage() {
             locations={locations}
             routes={routes}
             tripLabels={tripLabels}
+            showMarkers={false}
           />
           <RecentTrips trips={recentTrips} />
         </div>
