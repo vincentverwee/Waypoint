@@ -238,8 +238,32 @@ npm run dev
 - [x] **Vercel deploy** — repo imported to Vercel (auto-detected Next.js), `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` env vars set, deployed live. PWA/service worker is production-only, so it only activates on the live Vercel URL, not `localhost` dev.
 
 
-#### Export problems
-Ask the user what this is about ???
+### Post-M6 — Map colors, dashboard map & export UX polish
+
+A run of small iterative changes after deploy (all on `main`, live on Vercel):
+
+**Export UX (`src/app/trips/[id]/export/page.tsx`)**
+- [x] Stop checklist **defaults to none checked** — the whole trip always draws; you opt *in* to which stops get a label/caption/"+km" (`setIncluded(new Set())` on load). With nothing checked the caption falls back to the trip title.
+- [x] Checklist is displayed **latest-stop-first** (reversed) — the number badge on each row still shows the true visit order (`{ loc, num: i+1 }` mapped, then `.reverse()`), so only the list order flipped, not the numbering or any downstream index (legs, day numbers).
+- [x] **Per-trip Export button on the dashboard** — each row of `RecentTrips` (dashboard) has an `ImageDown` icon-button linking to `/trips/[id]/export`, so any trip exports in one tap from the dashboard (mirrors the Export button on the trip detail page). Removed the row's misleading `cursor-pointer` (it never navigated).
+
+**Per-trip colors (`src/lib/tripColors.ts`)**
+- [x] `TRIP_COLORS` = the validated **8-hue categorical palette** (dataviz skill reference), in its documented fixed order — the order is the colorblind-safety mechanism (adjacent-pair CVD ΔE 9.1 / normal-vision ΔE 19.6 on a light surface; `scripts/validate_palette.js`). Replaces the old 6 ad-hoc hexes.
+- [x] `assignTripColors(trips)` gives each trip a **distinct** hue by chronological order (`start_date ?? created_at`), so no two trips collide — the old per-id **hash** (`colorForTrip`) chanced collisions ("multiple blues"). The dashboard and `/map` pass the resulting `tripColors` map to `MapWrapper`; `colorForTrip` (now over `TRIP_COLORS`) stays only as the fallback when no map is supplied. In `MapView` a single `resolveColor(tripId)` (`accentColor ?? tripColors?.[id] ?? colorForTrip(id)`) feeds markers, dots **and** route lines so they always match.
+- Note: the user asked about "same year → same colour, different shade" grouping; **rejected** because most trips are the same year (2026), so year-grouping would collapse them to one hue — the opposite of the goal. Distinct-per-trip is the intentional choice.
+
+**Stop markers (`MapView`/`MapWrapper` `markerStyle` prop: `'numbered' | 'dot' | 'none'`, default `'numbered'`)**
+- [x] Dashboard's combined multi-trip map was cluttered by overlapping **numbered pins** from every trip. Dashboard now passes `markerStyle="dot"` → small trip-colored **dots** drawn as a MapLibre **circle layer** (`DOTS_*`, `circle-radius` zoom-interpolated 3→5.5, white stroke), not DOM markers. Single-trip views + exports keep `'numbered'` DOM pins. `'none'` = nothing.
+
+**Overlapping routes — the rendering saga (`MapView.tsx`)** — kept every trip's color visible where routes share a road, without moving lines off the road. Iterations (each reverted on user feedback), ending at the current approach:
+1. ~~Per-route perpendicular `line-offset`~~ → **warped**: a constant *pixel* offset drifts lines off the road (huge at low zoom, hugging in as you zoom), plus corner artifacts on simplified geometry.
+2. ~~Nested widths~~ (each trip a different line width so shared roads show concentric colored bands, all centered) → **looked horrible** (fat base line, uneven thicknesses).
+3. **Current — dashes only where routes overlap** (user picked this from a 3-option menu): two line layers.
+   - **Dashed base** (`ROUTE_DASH_*`): every route's *full* geometry, `line-dasharray [2.2,1.4]`. Each route's dash phase runs from its own start point, so overlapping trips are naturally **out of phase** and their colored dashes interleave — all trips visible, on the true road, no offset.
+   - **Solid top** (`ROUTE_*`): only each route's **solo (non-overlapping)** runs, opaque, covering the dashed base so a trip running alone looks like a normal solid line.
+   - `computeSoloSegments()` classifies solo vs shared segments via an **O(n) grid hash** (`TAU ≈ 0.0006°`; a vertex is "shared" if another route is within its cell/neighbors; a segment is solo unless *both* endpoints are shared).
+   - Single-trip views / exports (`routeGeometry`) are unchanged — one solid line at 0.9 opacity, no dashes.
+   - Known limitation: on heavy multi-trip overlaps the topmost route shows more than the ones beneath it (opaque stacking can't split evenly), but every trip's color reads. Tune via the dash ratio if needed.
 
 ---
 
