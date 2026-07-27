@@ -3,6 +3,7 @@ import { StatsGrid } from '@/components/dashboard/StatsGrid';
 import { RecentTrips } from '@/components/dashboard/RecentTrips';
 import { MapWrapper } from '@/components/map/MapWrapper';
 import { getDashboardStats, getRecentTrips, getAllLocations } from '@/lib/data';
+import { assignTripColors } from '@/lib/tripColors';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +14,7 @@ export default async function DashboardPage() {
     getAllLocations(),
   ]);
   const tripLabels = Object.fromEntries(recentTrips.map((t) => [t.id, t.title]));
+  const tripColors = assignTripColors(recentTrips);
   const routes = recentTrips
     .filter((t) => t.route_geometry)
     .map((t) => ({ tripId: t.id, geometry: t.route_geometry! }));
@@ -33,7 +35,8 @@ export default async function DashboardPage() {
             locations={locations}
             routes={routes}
             tripLabels={tripLabels}
-            showMarkers={false}
+            tripColors={tripColors}
+            markerStyle="dot"
           />
           <RecentTrips trips={recentTrips} />
         </div>

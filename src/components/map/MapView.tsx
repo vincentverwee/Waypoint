@@ -4,9 +4,15 @@ import { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Location } from '@/types';
+import { TRIP_COLORS } from '@/lib/tripColors';
 
 const ROUTE_SOURCE_ID = 'route';
 const ROUTE_LAYER_ID = 'route-line';
+const DOTS_SOURCE_ID = 'stop-dots';
+const DOTS_LAYER_ID = 'stop-dots-layer';
+// Perpendicular pixel gap between overlapping trip routes so they run side-by-side (and both stay
+// visible) instead of one hiding the other where they share a road.
+const ROUTE_OFFSET_GAP = 3.5;
 
 // Explicit font stack for markers + labels. html2canvas can capture before the app's web font
 // (Inter) is ready, in which case it falls back to the browser default — serif — which is what
@@ -15,24 +21,12 @@ const ROUTE_LAYER_ID = 'route-line';
 const SANS_STACK =
   "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
-// Validated categorical palette (8 hues, fixed order — the order itself is the CVD-safety
-// mechanism, not cosmetic) so multi-trip views (dashboard, world map) stay distinguishable
-// well past the old 6-color set before two trips share a hue.
-const MARKER_COLORS = [
-  '#2a78d6', // blue
-  '#eb6834', // orange
-  '#1baf7a', // aqua
-  '#eda100', // yellow
-  '#e87ba4', // magenta
-  '#008300', // green
-  '#4a3aa7', // violet
-  '#e34948', // red
-];
-
+// Fallback trip color when the caller doesn't supply an explicit `tripColors` map (which assigns
+// distinct hues per trip). Hashing the id can collide, so prefer passing `tripColors`.
 export function colorForTrip(tripId: string) {
   let hash = 0;
   for (let i = 0; i < tripId.length; i++) hash = (hash * 31 + tripId.charCodeAt(i)) | 0;
-  return MARKER_COLORS[Math.abs(hash) % MARKER_COLORS.length];
+  return TRIP_COLORS[Math.abs(hash) % TRIP_COLORS.length];
 }
 
 function formatDate(dateStr: string | null) {
@@ -224,10 +218,15 @@ interface MapViewProps {
   routes?: TripRoute[];
   /** Optional label shown per-marker, e.g. the trip title when plotting multiple trips together. */
   tripLabels?: Record<string, string>;
-  /** Draw numbered stop markers/pins. Off for the dashboard's combined multi-trip map, where
-   *  markers from every trip overlapping got visually cluttered — the colored route lines alone
-   *  are enough to tell trips apart there. On everywhere else (single-trip views, exports). */
-  showMarkers?: boolean;
+  /** Explicit per-trip color map (distinct hue per trip). Takes precedence over the hashed
+   *  `colorForTrip` fallback; drives markers/dots and route-line color so they always match. */
+  tripColors?: Record<string, string>;
+  /** How to mark each stop:
+   *  - `'numbered'` (default): the big numbered pins — single-trip views + exports.
+   *  - `'dot'`: small trip-colored dots (no numbers) — the dashboard's combined multi-trip map,
+   *    where overlapping numbered pins got cluttered.
+   *  - `'none'`: no stop markers at all. */
+  markerStyle?: 'numbered' | 'dot' | 'none';
   /** Overrides per-trip marker/route coloring with one fixed color — for single-trip exports. */
   accentColor?: string;
   /** Renders each marker's name as a permanently visible tag instead of only in a click popup — for exports. */
@@ -258,7 +257,8 @@ export default function MapView({
   routeGeometry = null,
   routes,
   tripLabels,
-  showMarkers = true,
+  tripColors,
+  markerStyle = 'numbered',
   accentColor,
   showLabels = false,
   labeledIds,
@@ -349,6 +349,11 @@ export default function MapView({
     const numFont = Math.max(10, Math.round(dotSize * 0.45));
     const labelFont = Math.max(11, Math.round(LABEL_FONT_AT_DESIGN * s));
 
+    // Per-trip color: an explicit map wins (distinct hues), else the hashed fallback, else the
+    // single-trip default. Shared by numbered pins, dots and route lines so they always match.
+    const resolveColor = (tripId: string) =>
+      accentColor ?? tripColors?.[tripId] ?? (tripLabels ? colorForTrip(tripId) : '#4f46e5');
+
     // Number each marker by its position within its own trip (visit_order), not by
     // position in the combined array — otherwise markers from multiple trips plotted
     // together (dashboard, world map) number straight through instead of restarting per trip.
@@ -358,12 +363,13 @@ export default function MapView({
     const seenPerTrip = new Map<string, number>();
 
     markersRef.current.forEach((m) => m.remove());
-    markersRef.current = showMarkers
+    markersRef.current =
+      markerStyle === 'numbered'
       ? orderedLocations.map((loc) => {
           const number = (seenPerTrip.get(loc.trip_id) ?? 0) + 1;
           seenPerTrip.set(loc.trip_id, number);
 
-          const color = accentColor ?? (tripLabels ? colorForTrip(loc.trip_id) : '#4f46e5');
+          const color = resolveColor(loc.trip_id);
           const el = document.createElement('div');
           // NOTE: don't set `position` here — MapLibre's `.maplibregl-marker` class positions the
           // element absolutely and drives it via `transform`. An inline `position` overrides that
@@ -485,14 +491,19 @@ export default function MapView({
       place();
     }
 
+    // Spread multiple routes perpendicular to their direction (symmetric around 0) so overlapping
+    // trips run side-by-side and both stay visible instead of one covering the other.
     const routeFeatures: GeoJSON.Feature[] = routes?.length
-      ? routes.map((r) => ({
+      ? routes.map((r, i) => ({
           type: 'Feature',
-          properties: { color: accentColor ?? (tripLabels ? colorForTrip(r.tripId) : '#4f46e5') },
+          properties: {
+            color: resolveColor(r.tripId),
+            offset: (i - (routes.length - 1) / 2) * ROUTE_OFFSET_GAP,
+          },
           geometry: r.geometry,
         }))
       : routeGeometry
-        ? [{ type: 'Feature', properties: { color: accentColor ?? '#4f46e5' }, geometry: routeGeometry }]
+        ? [{ type: 'Feature', properties: { color: accentColor ?? '#4f46e5', offset: 0 }, geometry: routeGeometry }]
         : [];
 
     const existingSource = map.getSource(ROUTE_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
@@ -507,12 +518,52 @@ export default function MapView({
           type: 'line',
           source: ROUTE_SOURCE_ID,
           layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 'line-color': ['get', 'color'], 'line-width': 4, 'line-opacity': 0.85 },
+          paint: {
+            'line-color': ['get', 'color'],
+            'line-width': 4,
+            'line-opacity': 0.9,
+            'line-offset': ['get', 'offset'],
+          },
         });
       }
     } else if (existingSource) {
       if (map.getLayer(ROUTE_LAYER_ID)) map.removeLayer(ROUTE_LAYER_ID);
       map.removeSource(ROUTE_SOURCE_ID);
+    }
+
+    // Small trip-colored stop dots (markerStyle 'dot' — the dashboard's decluttered multi-trip map).
+    // A circle layer (not DOM markers) so many stops stay cheap; drawn above the route lines.
+    const dotFeatures: GeoJSON.Feature[] =
+      markerStyle === 'dot'
+        ? orderedLocations.map((loc) => ({
+            type: 'Feature',
+            properties: { color: resolveColor(loc.trip_id) },
+            geometry: { type: 'Point', coordinates: [loc.longitude, loc.latitude] },
+          }))
+        : [];
+    const existingDots = map.getSource(DOTS_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
+    const dotCollection: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: dotFeatures };
+    if (dotFeatures.length > 0) {
+      if (existingDots) {
+        existingDots.setData(dotCollection);
+      } else {
+        map.addSource(DOTS_SOURCE_ID, { type: 'geojson', data: dotCollection });
+        map.addLayer({
+          id: DOTS_LAYER_ID,
+          type: 'circle',
+          source: DOTS_SOURCE_ID,
+          paint: {
+            // Grow slightly with zoom so dots read at both the continent and city scale.
+            'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 3, 8, 5.5],
+            'circle-color': ['get', 'color'],
+            'circle-stroke-width': 1.5,
+            'circle-stroke-color': '#ffffff',
+          },
+        });
+      }
+    } else if (existingDots) {
+      if (map.getLayer(DOTS_LAYER_ID)) map.removeLayer(DOTS_LAYER_ID);
+      map.removeSource(DOTS_SOURCE_ID);
     }
 
     if (locations.length > 0) {
@@ -539,7 +590,7 @@ export default function MapView({
       const cb = onReadyRef.current;
       map.once('idle', () => cb());
     }
-  }, [locations, routeGeometry, routes, tripLabels, showMarkers, accentColor, showLabels, labeledIds, labelOverrides, reserveBottom, loaded]);
+  }, [locations, routeGeometry, routes, tripLabels, tripColors, markerStyle, accentColor, showLabels, labeledIds, labelOverrides, reserveBottom, loaded]);
 
   return <div ref={containerRef} className="h-full w-full rounded-2xl" />;
 }

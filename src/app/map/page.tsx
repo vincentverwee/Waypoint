@@ -1,12 +1,14 @@
 import { AppShell } from '@/components/layout/AppShell';
 import { MapWrapper } from '@/components/map/MapWrapper';
 import { getAllLocations, getAllTrips } from '@/lib/data';
+import { assignTripColors } from '@/lib/tripColors';
 
 export const dynamic = 'force-dynamic';
 
 export default async function MapPage() {
   const [locations, trips] = await Promise.all([getAllLocations(), getAllTrips()]);
   const tripLabels = Object.fromEntries(trips.map((t) => [t.id, t.title]));
+  const tripColors = assignTripColors(trips);
   const routes = trips
     .filter((t) => t.route_geometry)
     .map((t) => ({ tripId: t.id, geometry: t.route_geometry! }));
@@ -23,6 +25,7 @@ export default async function MapPage() {
           locations={locations}
           routes={routes}
           tripLabels={tripLabels}
+          tripColors={tripColors}
         />
       </div>
     </AppShell>
