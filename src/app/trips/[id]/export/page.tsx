@@ -392,17 +392,16 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
       // Small settle so the preview map has painted its latest frame before we read its canvas.
       await new Promise((r) => setTimeout(r, 350));
 
-      // Capture the on-screen preview element and upscale it to the target format resolution.
-      // modern-screenshot's `scale` multiplies the output; text/pills/leader lines re-rasterize
-      // crisply from computed styles, and the MapLibre canvas (preserveDrawingBuffer:true) is read
-      // via toDataURL. On a phone the preview's canvas buffer is already ~preview×devicePixelRatio
-      // (~1000px+), so the 1080 formats come out effectively 1:1.
-      const scale = format.width / previewWidth;
+      // The preview renders the stage at FULL export resolution (it's only *displayed* shrunk via
+      // a CSS transform on an ancestor), so we capture previewRef 1:1 — MapLibre's own dense detail,
+      // small labels, thin route line and normal-size attribution all come through crisply. The
+      // ancestor transform doesn't affect the capture: modern-screenshot clones from previewRef
+      // down (which has no transform of its own) and honors the explicit width/height.
       const dataUrl = await domToPng(previewRef.current, {
-        width: previewWidth,
-        height: previewHeight,
-        scale,
-        // Fill behind the preview's rounded corners so they don't export as transparent notches.
+        width: format.width,
+        height: format.height,
+        scale: 1,
+        // Fill behind the stage's tiny rounded corners so they don't export as transparent notches.
         backgroundColor: theme === 'dark' ? '#000000' : '#ffffff',
         // Wait for web fonts to be embedded so the caption never falls back to a system font.
         font: {},
@@ -623,23 +622,37 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
           </div>
 
           <div className="flex items-start justify-center">
-            {/* This preview IS the capture source (see handleExport) — WYSIWYG export. */}
-            <div ref={previewRef} style={{ width: previewWidth, height: previewHeight }}>
-              <ExportStage
-                width={previewWidth}
-                height={previewHeight}
-                mapKey={formatId}
-                locations={locations}
-                labeledIds={labeledIds}
-                labelOverrides={customLabels}
-                routeGeometry={routeGeometry}
-                accentColor={accentColor}
-                theme={theme}
-                captionStops={captionStops}
-                nameSize={nameSize}
-                addedKm={addedKm}
-                totalKm={totalKm}
-              />
+            {/* The preview renders the stage at FULL export resolution (so MapLibre draws its
+                native dense detail, small labels, thin route line and a normal-size attribution)
+                and is only *displayed* shrunk to fit the panel via a CSS transform on the scaler
+                below. previewRef wraps the un-transformed full-size element — the exact capture
+                source in handleExport (grabbed 1:1). WYSIWYG. */}
+            <div style={{ width: previewWidth, height: previewHeight, overflow: 'hidden' }}>
+              <div
+                style={{
+                  transform: `scale(${previewWidth / format.width})`,
+                  transformOrigin: 'top left',
+                }}
+              >
+                <div ref={previewRef} style={{ width: format.width, height: format.height }}>
+                  <ExportStage
+                    width={format.width}
+                    height={format.height}
+                    mapKey={formatId}
+                    locations={locations}
+                    labeledIds={labeledIds}
+                    labelOverrides={customLabels}
+                    routeGeometry={routeGeometry}
+                    accentColor={accentColor}
+                    theme={theme}
+                    captionStops={captionStops}
+                    nameSize={nameSize}
+                    addedKm={addedKm}
+                    totalKm={totalKm}
+                    pixelRatio={1}
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </div>
