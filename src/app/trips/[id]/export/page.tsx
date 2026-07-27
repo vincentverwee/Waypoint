@@ -229,7 +229,7 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
     getTripWithLocations(id).then(({ trip, locations }) => {
       setTrip(trip);
       setLocations(locations);
-      setIncluded(new Set(locations.map((l) => l.id)));
+      setIncluded(new Set());
       setLoading(false);
     });
   }, [id]);
