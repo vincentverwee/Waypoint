@@ -8,15 +8,71 @@ import { TRIP_COLORS } from '@/lib/tripColors';
 
 const ROUTE_SOURCE_ID = 'route';
 const ROUTE_LAYER_ID = 'route-line';
+const ROUTE_DASH_SOURCE_ID = 'route-dash';
+const ROUTE_DASH_LAYER_ID = 'route-dash-line';
 const DOTS_SOURCE_ID = 'stop-dots';
 const DOTS_LAYER_ID = 'stop-dots-layer';
-// Nested-band widths for overlapping trip routes: each trip gets a distinct line width so that
-// where routes share a road they nest inside one another (all centered on the road, no offset →
-// no warping) and every trip's color stays visible. Widest is drawn first (underneath).
-const ROUTE_WIDTH_TOP = 3; // narrowest, drawn on top (innermost visible band)
-const ROUTE_WIDTH_STEP = 3; // width added per rank below the top
-const ROUTE_WIDTH_MAX = 15; // cap so many trips don't produce an absurdly fat base line
-const SINGLE_ROUTE_WIDTH = 4; // single-trip views / exports keep the original constant width
+const ROUTE_WIDTH = 4;
+
+/**
+ * Splits each trip's route into the segments that run ALONE (no other trip nearby) — used to draw a
+ * solid line on top that covers the dashed base everywhere except where trips overlap. A vertex is
+ * "shared" when another route passes within ~a cell of it (grid hash for O(n)); a segment is solo
+ * unless both its endpoints are shared. Returns one solid LineString feature per solo run.
+ */
+function computeSoloSegments(
+  routes: { tripId: string; geometry: GeoJSON.LineString; color: string }[]
+): GeoJSON.Feature[] {
+  const TAU = 0.0006; // grid cell in degrees (~45–65 m) — treats near-coincident vertices as shared
+  const key = (lng: number, lat: number) => `${Math.floor(lng / TAU)}:${Math.floor(lat / TAU)}`;
+  const cellRoutes = new Map<string, Set<number>>();
+  routes.forEach((r, ri) => {
+    for (const [lng, lat] of r.geometry.coordinates) {
+      const k = key(lng, lat);
+      let set = cellRoutes.get(k);
+      if (!set) cellRoutes.set(k, (set = new Set()));
+      set.add(ri);
+    }
+  });
+  const isShared = (lng: number, lat: number, ri: number) => {
+    const cx = Math.floor(lng / TAU);
+    const cy = Math.floor(lat / TAU);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const set = cellRoutes.get(`${cx + dx}:${cy + dy}`);
+        if (set) for (const other of set) if (other !== ri) return true;
+      }
+    }
+    return false;
+  };
+
+  const features: GeoJSON.Feature[] = [];
+  routes.forEach((r, ri) => {
+    const coords = r.geometry.coordinates as [number, number][];
+    const shared = coords.map(([lng, lat]) => isShared(lng, lat, ri));
+    let run: [number, number][] = [];
+    const flush = () => {
+      if (run.length >= 2) {
+        features.push({
+          type: 'Feature',
+          properties: { color: r.color, opacity: 1 },
+          geometry: { type: 'LineString', coordinates: run },
+        });
+      }
+      run = [];
+    };
+    for (let k = 0; k < coords.length - 1; k++) {
+      if (shared[k] && shared[k + 1]) {
+        flush(); // this segment overlaps another trip → leave it to the dashed base
+      } else {
+        if (run.length === 0) run.push(coords[k]);
+        run.push(coords[k + 1]);
+      }
+    }
+    flush();
+  });
+  return features;
+}
 
 // Explicit font stack for markers + labels. html2canvas can capture before the app's web font
 // (Inter) is ready, in which case it falls back to the browser default — serif — which is what
@@ -495,60 +551,70 @@ export default function MapView({
       place();
     }
 
-    // Routes stay at their TRUE position (no perpendicular offset — that warped lines off the roads
-    // at low zoom). To keep every trip visible where routes overlap, give each route a distinct
-    // width so they nest: the widest is drawn first (underneath) and the narrowest on top, all
-    // centered on the road, so a shared road reads as one line with the colors nested across it.
-    const rankedRoutes = routes?.length
-      ? routes.map((r, i) => ({
-          color: resolveColor(r.tripId),
-          geometry: r.geometry,
-          width: Math.min(ROUTE_WIDTH_MAX, ROUTE_WIDTH_TOP + (routes.length - 1 - i) * ROUTE_WIDTH_STEP),
-        }))
+    // Overlap handling (multi-trip views): dashes only where trips share a road, solid elsewhere.
+    //  - Base DASH layer: every route's FULL geometry, dashed. Because each route's dash phase runs
+    //    from its own start point, overlapping trips are out of phase and their colored dashes
+    //    interleave (all trips visible) — all on the true road, no offset/warping.
+    //  - Top SOLID layer: only each route's solo (non-overlapping) runs, drawn opaque to cover the
+    //    dashed base so a trip running alone looks like a normal solid line.
+    // Single-trip views / exports (routeGeometry) have no overlaps → just one solid full line.
+    const coloredRoutes = routes?.length
+      ? routes.map((r) => ({ tripId: r.tripId, geometry: r.geometry, color: resolveColor(r.tripId) }))
       : [];
-    const routeFeatures: GeoJSON.Feature[] = routes?.length
-      ? // widest first → drawn underneath; narrowest last → drawn on top (innermost band)
-        [...rankedRoutes]
-          .sort((a, b) => b.width - a.width)
-          .map((r) => ({
-            type: 'Feature',
-            // opacity 1 so nested bands show crisp colors instead of muddy blends
-            properties: { color: r.color, width: r.width, opacity: 1 },
-            geometry: r.geometry,
-          }))
+
+    const dashFeatures: GeoJSON.Feature[] = coloredRoutes.map((r) => ({
+      type: 'Feature',
+      properties: { color: r.color },
+      geometry: r.geometry,
+    }));
+    const soloFeatures: GeoJSON.Feature[] = routes?.length
+      ? computeSoloSegments(coloredRoutes)
       : routeGeometry
         ? [
             {
               type: 'Feature',
-              properties: { color: accentColor ?? '#4f46e5', width: SINGLE_ROUTE_WIDTH, opacity: 0.9 },
+              properties: { color: accentColor ?? '#4f46e5', opacity: 0.9 },
               geometry: routeGeometry,
             },
           ]
         : [];
 
-    const existingSource = map.getSource(ROUTE_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
-    const collection: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: routeFeatures };
-    if (routeFeatures.length > 0) {
-      if (existingSource) {
-        existingSource.setData(collection);
-      } else {
-        map.addSource(ROUTE_SOURCE_ID, { type: 'geojson', data: collection });
-        map.addLayer({
-          id: ROUTE_LAYER_ID,
-          type: 'line',
-          source: ROUTE_SOURCE_ID,
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': ['get', 'color'],
-            'line-width': ['get', 'width'],
-            'line-opacity': ['get', 'opacity'],
-          },
-        });
+    const upsertLine = (
+      sourceId: string,
+      layerId: string,
+      features: GeoJSON.Feature[],
+      dashed: boolean
+    ) => {
+      const existing = map.getSource(sourceId) as maplibregl.GeoJSONSource | undefined;
+      const data: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features };
+      if (features.length > 0) {
+        if (existing) {
+          existing.setData(data);
+        } else {
+          map.addSource(sourceId, { type: 'geojson', data });
+          map.addLayer({
+            id: layerId,
+            type: 'line',
+            source: sourceId,
+            layout: { 'line-join': 'round', 'line-cap': dashed ? 'butt' : 'round' },
+            paint: {
+              'line-color': ['get', 'color'],
+              'line-width': ROUTE_WIDTH,
+              'line-opacity': dashed ? 1 : ['coalesce', ['get', 'opacity'], 1],
+              // dash/gap in line-width units; more dash than gap so overlaps stay well-covered.
+              ...(dashed ? { 'line-dasharray': [2.2, 1.4] as [number, number] } : {}),
+            },
+          });
+        }
+      } else if (existing) {
+        if (map.getLayer(layerId)) map.removeLayer(layerId);
+        map.removeSource(sourceId);
       }
-    } else if (existingSource) {
-      if (map.getLayer(ROUTE_LAYER_ID)) map.removeLayer(ROUTE_LAYER_ID);
-      map.removeSource(ROUTE_SOURCE_ID);
-    }
+    };
+
+    // Dashed base first (underneath), then the solid solo layer on top.
+    upsertLine(ROUTE_DASH_SOURCE_ID, ROUTE_DASH_LAYER_ID, dashFeatures, true);
+    upsertLine(ROUTE_SOURCE_ID, ROUTE_LAYER_ID, soloFeatures, false);
 
     // Small trip-colored stop dots (markerStyle 'dot' — the dashboard's decluttered multi-trip map).
     // A circle layer (not DOM markers) so many stops stay cheap; drawn above the route lines.
