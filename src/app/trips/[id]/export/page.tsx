@@ -465,7 +465,12 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
                     </div>
                   </div>
                   <div className="max-h-80 space-y-1 overflow-y-auto rounded-xl border border-border/60 p-1">
-                    {locations.map((loc, i) => {
+                    {/* Displayed latest-stop-first (reversed), but the number badge still shows
+                        each stop's true visit order (1 = trip start). */}
+                    {locations
+                      .map((loc, i) => ({ loc, num: i + 1 }))
+                      .reverse()
+                      .map(({ loc, num }) => {
                       const on = included.has(loc.id);
                       const custom = customLabels[loc.id] ?? '';
                       const comment = customComments[loc.id] ?? '';
@@ -495,7 +500,7 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
                                 {on && <Check size={12} strokeWidth={3} />}
                               </span>
                               <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                                {i + 1}.
+                                {num}.
                               </span>
                             </button>
                             <input
