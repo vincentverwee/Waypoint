@@ -94,14 +94,16 @@ export function MapWrapper({
   );
 
   if (!showLegend) {
-    return <div className={className}>{map}</div>;
+    return <div className={cn('min-w-0', className)}>{map}</div>;
   }
 
-  // Legend on top (shrink-0), map fills the rest.
+  // Legend on top (shrink-0), map fills the rest. `min-w-0` lets this item shrink below the
+  // legend's intrinsic (nowrap chips) width so the legend scrolls internally instead of pushing
+  // the whole page wider than the viewport on mobile.
   return (
-    <div className={cn('flex flex-col gap-3', className)}>
+    <div className={cn('flex min-w-0 flex-col gap-3', className)}>
       <TripLegend chips={chips} selectedId={selectedTripId} onSelect={setSelectedTripId} />
-      <div className="min-h-0 flex-1">{map}</div>
+      <div className="min-h-0 min-w-0 flex-1">{map}</div>
     </div>
   );
 }

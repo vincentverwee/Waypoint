@@ -27,7 +27,7 @@ export function TripLegend({ chips, selectedId, onSelect, className }: TripLegen
   return (
     <div
       className={cn(
-        'flex shrink-0 items-center gap-2 overflow-x-auto pb-1',
+        'flex w-full min-w-0 max-w-full shrink-0 items-center gap-2 overflow-x-auto pb-1',
         // hide scrollbar but keep scrollability (touch)
         '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
         className
