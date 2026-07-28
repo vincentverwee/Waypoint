@@ -37,6 +37,7 @@ export default async function DashboardPage() {
             tripLabels={tripLabels}
             tripColors={tripColors}
             markerStyle="dot"
+            selectable
           />
           <RecentTrips trips={recentTrips} />
         </div>

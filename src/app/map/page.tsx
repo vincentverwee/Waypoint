@@ -26,6 +26,7 @@ export default async function MapPage() {
           routes={routes}
           tripLabels={tripLabels}
           tripColors={tripColors}
+          selectable
         />
       </div>
     </AppShell>

@@ -4,75 +4,28 @@ import { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Location } from '@/types';
-import { TRIP_COLORS } from '@/lib/tripColors';
+import { colorForTrip } from '@/lib/tripColors';
+import { buildCorridorSegments } from '@/lib/routing/corridors';
 
-const ROUTE_SOURCE_ID = 'route';
+const ROUTE_SOURCE_ID = 'route'; // single-trip solid line (trip detail + export)
 const ROUTE_LAYER_ID = 'route-line';
-const ROUTE_DASH_SOURCE_ID = 'route-dash';
-const ROUTE_DASH_LAYER_ID = 'route-dash-line';
+// Multi-trip corridor segments (dashboard + world map): one source, four line layers.
+const CORRIDOR_SOURCE_ID = 'corridor';
+const CORRIDOR_CASING_LAYER_ID = 'corridor-casing';
+const CORRIDOR_BASE_LAYER_ID = 'corridor-base';
+const CORRIDOR_HL_LAYER_ID = 'corridor-hl'; // selected trip's segments, lifted on top
 const DOTS_SOURCE_ID = 'stop-dots';
 const DOTS_LAYER_ID = 'stop-dots-layer';
 const ROUTE_WIDTH = 4;
 
-/**
- * Splits each trip's route into the segments that run ALONE (no other trip nearby) — used to draw a
- * solid line on top that covers the dashed base everywhere except where trips overlap. A vertex is
- * "shared" when another route passes within ~a cell of it (grid hash for O(n)); a segment is solo
- * unless both its endpoints are shared. Returns one solid LineString feature per solo run.
- */
-function computeSoloSegments(
-  routes: { tripId: string; geometry: GeoJSON.LineString; color: string }[]
-): GeoJSON.Feature[] {
-  const TAU = 0.0006; // grid cell in degrees (~45–65 m) — treats near-coincident vertices as shared
-  const key = (lng: number, lat: number) => `${Math.floor(lng / TAU)}:${Math.floor(lat / TAU)}`;
-  const cellRoutes = new Map<string, Set<number>>();
-  routes.forEach((r, ri) => {
-    for (const [lng, lat] of r.geometry.coordinates) {
-      const k = key(lng, lat);
-      let set = cellRoutes.get(k);
-      if (!set) cellRoutes.set(k, (set = new Set()));
-      set.add(ri);
-    }
-  });
-  const isShared = (lng: number, lat: number, ri: number) => {
-    const cx = Math.floor(lng / TAU);
-    const cy = Math.floor(lat / TAU);
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        const set = cellRoutes.get(`${cx + dx}:${cy + dy}`);
-        if (set) for (const other of set) if (other !== ri) return true;
-      }
-    }
-    return false;
-  };
+// Default (no trip selected) corridor stroke colors.
+const CORRIDOR_SHARED_COLOR = '#5b6470'; // graphite — reads as "several trips travel this road"
+const CORRIDOR_CASING_COLOR = '#ffffff'; // white outline under every stroke (road-map readability)
+const CORRIDOR_DIM_COLOR = '#aeb6c2'; // unrelated trips fade to this once one trip is selected
 
-  const features: GeoJSON.Feature[] = [];
-  routes.forEach((r, ri) => {
-    const coords = r.geometry.coordinates as [number, number][];
-    const shared = coords.map(([lng, lat]) => isShared(lng, lat, ri));
-    let run: [number, number][] = [];
-    const flush = () => {
-      if (run.length >= 2) {
-        features.push({
-          type: 'Feature',
-          properties: { color: r.color, opacity: 1 },
-          geometry: { type: 'LineString', coordinates: run },
-        });
-      }
-      run = [];
-    };
-    for (let k = 0; k < coords.length - 1; k++) {
-      if (shared[k] && shared[k + 1]) {
-        flush(); // this segment overlaps another trip → leave it to the dashed base
-      } else {
-        if (run.length === 0) run.push(coords[k]);
-        run.push(coords[k + 1]);
-      }
-    }
-    flush();
-  });
-  return features;
-}
+// Zoom-interpolated base stroke width (px): thin overview at low zoom, more detail zoomed in.
+// Written inline in each layer's paint (below) because it's multiplied per-feature by `widthMul`
+// (selected ↑, dimmed ↓) — a `['*', ['get','widthMul'], <zoomCurve>]` expression. Casing = that + 3.
 
 // Explicit font stack for markers + labels. html2canvas can capture before the app's web font
 // (Inter) is ready, in which case it falls back to the browser default — serif — which is what
@@ -80,14 +33,6 @@ function computeSoloSegments(
 // if Inter isn't captured. (The export page also awaits document.fonts.ready before capturing.)
 const SANS_STACK =
   "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
-
-// Fallback trip color when the caller doesn't supply an explicit `tripColors` map (which assigns
-// distinct hues per trip). Hashing the id can collide, so prefer passing `tripColors`.
-export function colorForTrip(tripId: string) {
-  let hash = 0;
-  for (let i = 0; i < tripId.length; i++) hash = (hash * 31 + tripId.charCodeAt(i)) | 0;
-  return TRIP_COLORS[Math.abs(hash) % TRIP_COLORS.length];
-}
 
 function formatDate(dateStr: string | null) {
   if (!dateStr) return null;
@@ -310,6 +255,13 @@ interface MapViewProps {
   /** Fires on the map's `idle` event after the latest markers/route/fit have painted — the export
    *  page awaits this before capturing the full-resolution map. */
   onReady?: () => void;
+  /** Currently focused trip (multi-trip corridor rendering). Its segments — including any shared
+   *  corridors it belongs to — jump to full color/width on top; every other trip dims. `null`/absent
+   *  = default view (solo=trip color, shared=neutral corridor). */
+  selectedTripId?: string | null;
+  /** Fires when the user taps a route/dot (a trip id) or empty map (`null`). When absent the map
+   *  is non-interactive for selection (trip detail + export). */
+  onSelectTrip?: (tripId: string | null) => void;
 }
 
 export default function MapView({
@@ -327,11 +279,19 @@ export default function MapView({
   showControls = true,
   pixelRatio,
   onReady,
+  selectedTripId = null,
+  onSelectTrip,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
+  const markerTripIdsRef = useRef<string[]>([]); // parallel to markersRef — for select-dimming
   const onReadyRef = useRef(onReady);
+  const onSelectTripRef = useRef(onSelectTrip);
+  const selectedTripIdRef = useRef(selectedTripId);
+  // Set by the route effect; re-applies corridor/dot/marker coloring for the current selection
+  // WITHOUT rebuilding markers (so tapping to select never flickers the pins).
+  const repaintSelectionRef = useRef<(() => void) | null>(null);
   // Label overlay: a div (name tags) + svg (leader lines) layered above the map canvas.
   const labelOverlayRef = useRef<HTMLDivElement | null>(null);
   const labelSvgRef = useRef<SVGSVGElement | null>(null);
@@ -341,7 +301,8 @@ export default function MapView({
 
   useEffect(() => {
     onReadyRef.current = onReady;
-  }, [onReady]);
+    onSelectTripRef.current = onSelectTrip;
+  }, [onReady, onSelectTrip]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -358,6 +319,35 @@ export default function MapView({
       ...(pixelRatio != null ? { pixelRatio } : {}),
     });
     if (showControls) map.addControl(new maplibregl.NavigationControl(), 'top-right');
+
+    // Tap-to-focus (only when a selection handler is wired — dashboard + world map). One global
+    // click: hit-test the corridor + dot layers; a hit selects that trip, empty map deselects.
+    // Shared corridors carry all their trips — keep the current selection if it's one of them,
+    // otherwise focus the first. Mobile-first: big touch targets, no hover needed.
+    const onMapClick = (e: maplibregl.MapMouseEvent) => {
+      const select = onSelectTripRef.current;
+      if (!select) return;
+      const layers = [CORRIDOR_BASE_LAYER_ID, DOTS_LAYER_ID].filter((id) => map.getLayer(id));
+      const feats = layers.length ? map.queryRenderedFeatures(e.point, { layers }) : [];
+      if (!feats.length) {
+        if (selectedTripIdRef.current != null) select(null);
+        return;
+      }
+      const raw = feats[0].properties?.trips;
+      let trips: string[] = [];
+      if (typeof raw === 'string') {
+        try {
+          trips = JSON.parse(raw);
+        } catch {
+          trips = raw ? [raw] : [];
+        }
+      }
+      if (!trips.length) return;
+      const current = selectedTripIdRef.current;
+      select(current && trips.includes(current) ? current : trips[0]);
+    };
+    map.on('click', onMapClick);
+
     map.on('load', () => {
       // In dev, React Strict Mode mounts/cleans up/remounts this effect; guard against a
       // stale map's late 'load' event marking a since-replaced instance as ready.
@@ -453,6 +443,9 @@ export default function MapView({
             .addTo(map);
         })
       : [];
+    // Parallel to markersRef — lets the selection repaint dim non-focused trips' pins.
+    markerTripIdsRef.current =
+      markerStyle === 'numbered' ? orderedLocations.map((l) => l.trip_id) : [];
 
     // Name tags live in a separate overlay (not glued under each dot) so they can be laid out
     // to never overlap, with a leader line back to the marker when displaced.
@@ -551,25 +544,18 @@ export default function MapView({
       place();
     }
 
-    // Overlap handling (multi-trip views): dashes only where trips share a road, solid elsewhere.
-    //  - Base DASH layer: every route's FULL geometry, dashed. Because each route's dash phase runs
-    //    from its own start point, overlapping trips are out of phase and their colored dashes
-    //    interleave (all trips visible) — all on the true road, no offset/warping.
-    //  - Top SOLID layer: only each route's solo (non-overlapping) runs, drawn opaque to cover the
-    //    dashed base so a trip running alone looks like a normal solid line.
-    // Single-trip views / exports (routeGeometry) have no overlaps → just one solid full line.
-    const coloredRoutes = routes?.length
-      ? routes.map((r) => ({ tripId: r.tripId, geometry: r.geometry, color: resolveColor(r.tripId) }))
-      : [];
+    // ── Route rendering ──────────────────────────────────────────────────────────────────────
+    // Two independent paths:
+    //  • routeGeometry (single trip: detail + export) → one solid line, unchanged.
+    //  • routes[]      (multi-trip: dashboard + world map) → the corridor segment graph. Every
+    //    distinct piece of road is ONE segment tagged with the trips that use it. Solo runs draw
+    //    in the trip color; a shared corridor draws once as a neutral graphite line under a white
+    //    casing (no offsets, no dashes). Selecting a trip lifts its segments — including the shared
+    //    corridors it belongs to — to full color/width on top and dims everything else.
 
-    const dashFeatures: GeoJSON.Feature[] = coloredRoutes.map((r) => ({
-      type: 'Feature',
-      properties: { color: r.color },
-      geometry: r.geometry,
-    }));
-    const soloFeatures: GeoJSON.Feature[] = routes?.length
-      ? computeSoloSegments(coloredRoutes)
-      : routeGeometry
+    // --- Single-trip solid line (routeGeometry only) ---
+    const singleLineFeatures: GeoJSON.Feature[] =
+      !routes?.length && routeGeometry
         ? [
             {
               type: 'Feature',
@@ -578,78 +564,205 @@ export default function MapView({
             },
           ]
         : [];
-
-    const upsertLine = (
-      sourceId: string,
-      layerId: string,
-      features: GeoJSON.Feature[],
-      dashed: boolean
-    ) => {
-      const existing = map.getSource(sourceId) as maplibregl.GeoJSONSource | undefined;
-      const data: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features };
-      if (features.length > 0) {
-        if (existing) {
-          existing.setData(data);
-        } else {
-          map.addSource(sourceId, { type: 'geojson', data });
-          map.addLayer({
-            id: layerId,
-            type: 'line',
-            source: sourceId,
-            layout: { 'line-join': 'round', 'line-cap': dashed ? 'butt' : 'round' },
-            paint: {
-              'line-color': ['get', 'color'],
-              'line-width': ROUTE_WIDTH,
-              'line-opacity': dashed ? 1 : ['coalesce', ['get', 'opacity'], 1],
-              // dash/gap in line-width units; more dash than gap so overlaps stay well-covered.
-              ...(dashed ? { 'line-dasharray': [2.2, 1.4] as [number, number] } : {}),
-            },
-          });
-        }
-      } else if (existing) {
-        if (map.getLayer(layerId)) map.removeLayer(layerId);
-        map.removeSource(sourceId);
-      }
-    };
-
-    // Dashed base first (underneath), then the solid solo layer on top.
-    upsertLine(ROUTE_DASH_SOURCE_ID, ROUTE_DASH_LAYER_ID, dashFeatures, true);
-    upsertLine(ROUTE_SOURCE_ID, ROUTE_LAYER_ID, soloFeatures, false);
-
-    // Small trip-colored stop dots (markerStyle 'dot' — the dashboard's decluttered multi-trip map).
-    // A circle layer (not DOM markers) so many stops stay cheap; drawn above the route lines.
-    const dotFeatures: GeoJSON.Feature[] =
-      markerStyle === 'dot'
-        ? orderedLocations.map((loc) => ({
-            type: 'Feature',
-            properties: { color: resolveColor(loc.trip_id) },
-            geometry: { type: 'Point', coordinates: [loc.longitude, loc.latitude] },
-          }))
-        : [];
-    const existingDots = map.getSource(DOTS_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
-    const dotCollection: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: dotFeatures };
-    if (dotFeatures.length > 0) {
-      if (existingDots) {
-        existingDots.setData(dotCollection);
-      } else {
-        map.addSource(DOTS_SOURCE_ID, { type: 'geojson', data: dotCollection });
+    const existingRoute = map.getSource(ROUTE_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
+    if (singleLineFeatures.length > 0) {
+      const data: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: singleLineFeatures };
+      if (existingRoute) existingRoute.setData(data);
+      else {
+        map.addSource(ROUTE_SOURCE_ID, { type: 'geojson', data });
         map.addLayer({
-          id: DOTS_LAYER_ID,
-          type: 'circle',
-          source: DOTS_SOURCE_ID,
+          id: ROUTE_LAYER_ID,
+          type: 'line',
+          source: ROUTE_SOURCE_ID,
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
           paint: {
-            // Grow slightly with zoom so dots read at both the continent and city scale.
-            'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 3, 8, 5.5],
-            'circle-color': ['get', 'color'],
-            'circle-stroke-width': 1.5,
-            'circle-stroke-color': '#ffffff',
+            'line-color': ['get', 'color'],
+            'line-width': ROUTE_WIDTH,
+            'line-opacity': ['coalesce', ['get', 'opacity'], 1],
           },
         });
       }
-    } else if (existingDots) {
+    } else if (existingRoute) {
+      if (map.getLayer(ROUTE_LAYER_ID)) map.removeLayer(ROUTE_LAYER_ID);
+      map.removeSource(ROUTE_SOURCE_ID);
+    }
+
+    // --- Multi-trip corridor segments ---
+    const segments = routes?.length ? buildCorridorSegments(routes) : [];
+
+    if (segments.length > 0 && !map.getSource(CORRIDOR_SOURCE_ID)) {
+      const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+      map.addSource(CORRIDOR_SOURCE_ID, { type: 'geojson', data: empty });
+      // Casing (white outline) → base stroke → highlight (selected trip, on top). Widths are
+      // zoom-interpolated × the per-feature widthMul, so selection/dim read at every zoom.
+      map.addLayer({
+        id: CORRIDOR_CASING_LAYER_ID,
+        type: 'line',
+        source: CORRIDOR_SOURCE_ID,
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-color': CORRIDOR_CASING_COLOR,
+          // casing = (widthMul × zoom-interpolated base) + 3px outline. The `zoom` interpolate must
+          // be the TOP-LEVEL expression (MapLibre rule), so the per-feature multiplier goes inside
+          // each zoom stop's output rather than wrapping the interpolate.
+          'line-width': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            3, ['+', ['*', ['coalesce', ['get', 'widthMul'], 1], 2], 3],
+            8, ['+', ['*', ['coalesce', ['get', 'widthMul'], 1], 3.5], 3],
+            14, ['+', ['*', ['coalesce', ['get', 'widthMul'], 1], 6], 3],
+          ],
+          'line-opacity': ['coalesce', ['get', 'casingOpacity'], 1],
+        },
+      });
+      map.addLayer({
+        id: CORRIDOR_BASE_LAYER_ID,
+        type: 'line',
+        source: CORRIDOR_SOURCE_ID,
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            3, ['*', ['coalesce', ['get', 'widthMul'], 1], 2],
+            8, ['*', ['coalesce', ['get', 'widthMul'], 1], 3.5],
+            14, ['*', ['coalesce', ['get', 'widthMul'], 1], 6],
+          ],
+          'line-opacity': ['coalesce', ['get', 'opacity'], 1],
+        },
+      });
+      map.addLayer({
+        id: CORRIDOR_HL_LAYER_ID,
+        type: 'line',
+        source: CORRIDOR_SOURCE_ID,
+        filter: ['==', ['get', 'sel'], 1],
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            3, ['*', ['coalesce', ['get', 'widthMul'], 1], 2],
+            8, ['*', ['coalesce', ['get', 'widthMul'], 1], 3.5],
+            14, ['*', ['coalesce', ['get', 'widthMul'], 1], 6],
+          ],
+          'line-opacity': 1,
+        },
+      });
+    } else if (segments.length === 0 && map.getSource(CORRIDOR_SOURCE_ID)) {
+      [CORRIDOR_HL_LAYER_ID, CORRIDOR_BASE_LAYER_ID, CORRIDOR_CASING_LAYER_ID].forEach((id) => {
+        if (map.getLayer(id)) map.removeLayer(id);
+      });
+      map.removeSource(CORRIDOR_SOURCE_ID);
+    }
+
+    // --- Stop dots (markerStyle 'dot' — the dashboard's decluttered multi-trip map) ---
+    // Circle layer (not DOM markers) so many stops stay cheap; added AFTER the corridor layers so
+    // it draws above the routes.
+    const wantDots = markerStyle === 'dot' && orderedLocations.length > 0;
+    if (wantDots && !map.getSource(DOTS_SOURCE_ID)) {
+      const empty: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+      map.addSource(DOTS_SOURCE_ID, { type: 'geojson', data: empty });
+      map.addLayer({
+        id: DOTS_LAYER_ID,
+        type: 'circle',
+        source: DOTS_SOURCE_ID,
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 3, 8, 5.5],
+          'circle-color': ['get', 'color'],
+          'circle-opacity': ['coalesce', ['get', 'opacity'], 1],
+          'circle-stroke-width': 1.5,
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-opacity': ['coalesce', ['get', 'opacity'], 1],
+        },
+      });
+    } else if (!wantDots && map.getSource(DOTS_SOURCE_ID)) {
       if (map.getLayer(DOTS_LAYER_ID)) map.removeLayer(DOTS_LAYER_ID);
       map.removeSource(DOTS_SOURCE_ID);
     }
+
+    // Selection-aware repaint: recomputes per-feature color/opacity/width for corridor segments,
+    // stop dots and numbered pins from the CURRENT selection, then setData — never rebuilds markers
+    // (so tapping to focus a trip doesn't flicker the pins). Called here and by the selection effect.
+    const paintSelection = () => {
+      const sel = selectedTripIdRef.current;
+      const selColor = sel != null ? resolveColor(sel) : null;
+
+      if (segments.length > 0) {
+        const features: GeoJSON.Feature[] = segments.map((seg) => {
+          const includes = sel != null && seg.trips.includes(sel);
+          let color: string;
+          let opacity: number;
+          let widthMul: number;
+          let casingOpacity: number;
+          if (sel != null) {
+            if (includes) {
+              color = selColor!;
+              opacity = 1;
+              widthMul = 1.5;
+              casingOpacity = 1;
+            } else {
+              color = CORRIDOR_DIM_COLOR;
+              opacity = 0.45;
+              widthMul = 0.75;
+              casingOpacity = 0.3;
+            }
+          } else {
+            color = seg.shared ? CORRIDOR_SHARED_COLOR : resolveColor(seg.trips[0]);
+            opacity = seg.shared ? 0.95 : 0.9;
+            widthMul = seg.shared ? 1.15 : 1;
+            casingOpacity = 1;
+          }
+          return {
+            type: 'Feature',
+            properties: {
+              color,
+              opacity,
+              widthMul,
+              casingOpacity,
+              sel: includes ? 1 : 0,
+              trips: JSON.stringify(seg.trips),
+            },
+            geometry: seg.geometry,
+          };
+        });
+        (map.getSource(CORRIDOR_SOURCE_ID) as maplibregl.GeoJSONSource | undefined)?.setData({
+          type: 'FeatureCollection',
+          features,
+        });
+      }
+
+      if (wantDots) {
+        const dotFeatures: GeoJSON.Feature[] = orderedLocations.map((loc) => {
+          const dim = sel != null && loc.trip_id !== sel;
+          return {
+            type: 'Feature',
+            properties: {
+              color: resolveColor(loc.trip_id),
+              opacity: dim ? 0.3 : 1,
+              trips: JSON.stringify([loc.trip_id]),
+            },
+            geometry: { type: 'Point', coordinates: [loc.longitude, loc.latitude] },
+          };
+        });
+        (map.getSource(DOTS_SOURCE_ID) as maplibregl.GeoJSONSource | undefined)?.setData({
+          type: 'FeatureCollection',
+          features: dotFeatures,
+        });
+      }
+
+      // Dim non-focused numbered pins to match the routes.
+      markersRef.current.forEach((m, i) => {
+        const tripId = markerTripIdsRef.current[i];
+        m.getElement().style.opacity = sel != null && tripId !== sel ? '0.3' : '1';
+      });
+    };
+    repaintSelectionRef.current = paintSelection;
+    paintSelection();
 
     if (locations.length > 0) {
       const bounds = locations.reduce(
@@ -676,6 +789,13 @@ export default function MapView({
       map.once('idle', () => cb());
     }
   }, [locations, routeGeometry, routes, tripLabels, tripColors, markerStyle, accentColor, showLabels, labeledIds, labelOverrides, reserveBottom, loaded]);
+
+  // Selection changes recolor corridor/dots/pins in place — deliberately NOT a dependency of the
+  // effect above, so focusing a trip never rebuilds markers (no flicker).
+  useEffect(() => {
+    selectedTripIdRef.current = selectedTripId;
+    repaintSelectionRef.current?.();
+  }, [selectedTripId]);
 
   return <div ref={containerRef} className="h-full w-full rounded-2xl" />;
 }

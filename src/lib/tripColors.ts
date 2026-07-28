@@ -15,6 +15,16 @@ export const TRIP_COLORS = [
 ];
 
 /**
+ * Fallback trip color when no explicit `tripColors` map (distinct hues per trip) is supplied.
+ * Hashing the id can collide, so prefer passing an `assignTripColors` map where possible.
+ */
+export function colorForTrip(tripId: string) {
+  let hash = 0;
+  for (let i = 0; i < tripId.length; i++) hash = (hash * 31 + tripId.charCodeAt(i)) | 0;
+  return TRIP_COLORS[Math.abs(hash) % TRIP_COLORS.length];
+}
+
+/**
  * Assigns each trip a *distinct* palette color by its position in chronological order — so no two
  * trips share (or nearly share) a hue, which the previous per-id hash did by chance. Ordering by
  * date keeps the assignment stable and puts nearby-in-time trips in adjacent hues. Past 8 trips the
