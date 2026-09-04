@@ -773,8 +773,9 @@ export default function MapView({
         )
       );
       // In export mode the bottom of the image is covered by the text scrim, so reserve
-      // extra bottom padding to keep the markers and their name tags above it.
-      const isExport = showLabels || labeledIds != null;
+      // extra bottom padding to keep the markers and their name tags above it. `reserveBottom`
+      // on its own also counts: the all-trips export draws routes + dots with no name tags.
+      const isExport = showLabels || labeledIds != null || reserveBottom != null;
       const height = containerRef.current?.clientHeight ?? 0;
       const padding = isExport
         ? { top: 70, left: 70, right: 70, bottom: reserveBottom ?? Math.round(height * 0.32) + 40 }

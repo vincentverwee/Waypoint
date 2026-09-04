@@ -239,6 +239,21 @@ npm run dev
 - [x] Rendered results are invalidated (`clearRendered()`, object URL revoked) whenever the picture changes — format, theme, accent, or the featured-stop set — plus on unmount, so the Save button never hands back a stale image.
 - Not device-verified from the dev env (no iOS/browser here); needs a deploy + one tap on the phone.
 
+### All-trips map export (`/map/export`)
+
+The trip export makes a post out of *one* trip; this makes one out of the **whole map**.
+
+- [x] **New page `src/app/map/export/page.tsx`** — the combined multi-trip map (corridor route rendering, one hue per trip, optional stop dots) over a caption scrim. Controls: a trip checklist (all ticked by default) with a color swatch + inline rename per trip, an editable **headline** (default = the year or year-range the included trips span, e.g. “Travels 2026”), toggles for the **trip-name legend** and the **stop dots**, plus the same format / theme / accent-color options as the trip export. The caption stacks headline → legend chips (color dot + name) → total-km badge + `N trips · N countries · N cities`.
+  - The **accent color drives only the km badge** here — routes keep their per-trip hues, so `accentColor` is deliberately NOT passed to `MapWrapper` (it would collapse every trip to one color via `resolveColor`).
+  - Colors come from `assignTripColors(trips)` over **all** trips, not just the ticked ones, so a trip keeps its hue as you tick others on and off.
+  - Fetches client-side via `trips-store`'s `getTrips()` / `getAllLocations()` (browser Supabase client) — the dashboard's server-side `getRecentTrips(5)` would have capped the post at 5 trips.
+- [x] **Entry points** — an “Export map” button above the dashboard map and in the `/map` page header. Both link to `/map/export`.
+- [x] **`MapView`: `reserveBottom` alone now counts as export mode** for the fit-bounds padding (`isExport = showLabels || labeledIds != null || reserveBottom != null`). The all-trips export draws routes + dots with no name tags, so neither of the old two flags was set and the fit ignored the caption scrim.
+- [x] **Shared extractions** (the two export pages were about to duplicate the subtle bits):
+  - `src/hooks/useImageExport.ts` — the whole render/save flow, including every iOS-specific rule from round 6 (two taps, Blob not `data:` URL, no `await` before `navigator.share`, object-URL cleanup). One implementation, both pages.
+  - `src/lib/exportFormats.ts` — `EXPORT_FORMATS`, `DESIGN_WIDTH`, `PREVIEW_MAX_WIDTH`, `SANS_STACK`, `slugify`.
+- Same caveat as round 6: builds and typechecks clean, not click-verified in a real browser from here.
+
 ### ✅ Milestone 6 — PWA + Deployment
 - [x] **Full PWA with offline support** — hand-rolled service worker (`public/sw.js`), **not** `next-pwa`/Serwist (the webpack-based plugins are a compatibility risk against Next 16 + Turbopack). Strategies per request type: navigations → network-first w/ `offline.html` fallback; `/_next/static` & `/_next/image` → cache-first (content-hashed, immutable); `tiles.openfreemap.org` map tiles → stale-while-revalidate (capped 300); OSRM + Supabase → network-first w/ cache backup; Nominatim geocoding → bypassed (live typeahead, never stale). Caches versioned via `SW_VERSION`, old caches purged on `activate`. Registered client-side by `src/components/shared/ServiceWorkerRegistration.tsx` (production only — a SW in dev fights Turbopack HMR), mounted in `layout.tsx`.
 - [x] **Icons** — generated from `public/icons/icon.svg` (route/pin motif on the indigo→violet accent gradient) via the `sharp` bundled with Next: `icon-192/512`, `icon-maskable-192/512` (content scaled to the maskable safe zone, `icon-maskable.svg`), `apple-touch-icon` (180), `favicon.ico` (16/32/48) + `favicon-16/32`. Regen script was a throwaway (`__gen-icons.mjs`, deleted).

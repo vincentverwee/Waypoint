@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, use } from 'react';
 import Link from 'next/link';
-import { domToBlob } from 'modern-screenshot';
+import { useImageExport, isIOS } from '@/hooks/useImageExport';
 import { AppShell } from '@/components/layout/AppShell';
 import { MapWrapper } from '@/components/map/MapWrapper';
 import { Button } from '@/components/ui/button';
@@ -11,28 +11,17 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Trip, Location } from '@/types';
 import { getTripWithLocations } from '@/lib/trips-store';
 import { calculateRoute, RouteResult } from '@/lib/routing/osrm';
+import {
+  EXPORT_FORMATS,
+  DESIGN_WIDTH,
+  PREVIEW_MAX_WIDTH,
+  SANS_STACK,
+  slugify,
+} from '@/lib/exportFormats';
 import { ArrowLeft, Download, Sun, Moon, ImageDown, Check, RotateCcw, Share2, X } from 'lucide-react';
 
-interface ExportFormat {
-  id: string;
-  label: string;
-  width: number;
-  height: number;
-}
-
-const FORMATS: ExportFormat[] = [
-  { id: 'portrait', label: '1080 × 1350', width: 1080, height: 1350 },
-  { id: 'story', label: '1080 × 1920', width: 1080, height: 1920 },
-  { id: 'square-hd', label: '1920 × 1920', width: 1920, height: 1920 },
-  { id: 'square', label: '1080 × 1080', width: 1080, height: 1080 },
-];
-
-const DESIGN_WIDTH = 1080;
-const PREVIEW_MAX_WIDTH = 380;
+const FORMATS = EXPORT_FORMATS;
 const DEFAULT_ACCENT = '#4f46e5';
-// Concrete sans stack so the export never falls back to serif if Inter isn't embedded in time.
-const SANS_STACK =
-  "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
 function formatDate(dateStr: string | null) {
   if (!dateStr) return null;
@@ -41,25 +30,6 @@ function formatDate(dateStr: string | null) {
     month: 'short',
     year: 'numeric',
   });
-}
-
-/** iOS/iPadOS (incl. iPadOS reporting itself as "MacIntel" with a touch screen). */
-function isIOS() {
-  if (typeof navigator === 'undefined') return false;
-  return (
-    /iP(hone|ad|od)/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-  );
-}
-
-function slugify(text: string) {
-  return (
-    text
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '') || 'trip'
-  );
 }
 
 interface CaptionStop {
@@ -227,14 +197,16 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   const [routeError, setRouteError] = useState(false);
   // The full-trip route — calculated ONCE per trip, never on checkbox changes.
   const [route, setRoute] = useState<RouteResult | null>(null);
-  const [exporting, setExporting] = useState(false);
-  // Rendering and saving are deliberately TWO steps (see handleRender/handleSave): rendering takes
-  // seconds, which on iOS Safari outlives the tap's transient user activation — a download or share
-  // fired at the end of it is silently ignored. The finished image is parked here and saved by a
-  // second, fresh tap.
-  const [rendered, setRendered] = useState<{ url: string; blob: Blob; name: string } | null>(null);
-  const [exportError, setExportError] = useState<string | null>(null);
-  const renderedUrlRef = useRef<string | null>(null);
+  // Rendering and saving are deliberately TWO steps — see useImageExport for why (iOS drops a
+  // download fired after the tap's user activation has expired).
+  const {
+    rendered,
+    error: exportError,
+    busy: exporting,
+    render,
+    save: handleSave,
+    clear: clearRendered,
+  } = useImageExport();
 
   // We capture the on-screen preview itself (already loaded, fitted, with markers/route/labels)
   // and upscale it to the target resolution — no hidden second map to race, which is what kept
@@ -274,14 +246,6 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
       cancelled = true;
     };
   }, [locations]);
-
-  // Release the last rendered image's object URL when this page goes away.
-  useEffect(
-    () => () => {
-      if (renderedUrlRef.current) URL.revokeObjectURL(renderedUrlRef.current);
-    },
-    []
-  );
 
   // Stable array identity so the map only rebuilds markers when the featured set changes.
   const labeledIds = useMemo(() => [...included], [included]);
@@ -388,16 +352,6 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   const totalKm = route?.distanceKm ?? null;
   const routeGeometry = route?.geometry ?? null;
 
-  /** Drop a previously rendered image — anything that changes the picture invalidates it. */
-  function clearRendered() {
-    if (renderedUrlRef.current) {
-      URL.revokeObjectURL(renderedUrlRef.current);
-      renderedUrlRef.current = null;
-    }
-    setRendered(null);
-    setExportError(null);
-  }
-
   function toggleStop(locId: string) {
     clearRendered();
     setIncluded((prev) => {
@@ -413,80 +367,19 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
     setIncluded(on ? new Set(locations.map((l) => l.id)) : new Set());
   }
 
-  /** Step 1 — rasterize the preview into a Blob. Slow (seconds), so it does NOT try to save. */
-  async function handleRender() {
+  function handleRender() {
     if (!trip || !previewRef.current) return;
-    clearRendered();
-    setExporting(true);
-    try {
-      // Make sure the web font is loaded so captions don't fall back to a system font.
-      if (typeof document !== 'undefined' && 'fonts' in document) {
-        try {
-          await (document as Document & { fonts: FontFaceSet }).fonts.ready;
-        } catch {
-          /* fonts.ready unsupported — the explicit sans stacks still keep it off serif */
-        }
-      }
-      // Small settle so the preview map has painted its latest frame before we read its canvas.
-      await new Promise((r) => setTimeout(r, 350));
-
-      // The preview renders the stage at FULL export resolution (it's only *displayed* shrunk via
-      // a CSS transform on an ancestor), so we capture previewRef 1:1 — MapLibre's own dense detail,
-      // small labels, thin route line and normal-size attribution all come through crisply. The
-      // ancestor transform doesn't affect the capture: modern-screenshot clones from previewRef
-      // down (which has no transform of its own) and honors the explicit width/height.
-      //
-      // domToBlob, not domToPng: a 1080×1920 PNG as a base64 `data:` URL is several megabytes, and
-      // iOS Safari silently refuses to download one that big. A Blob + object URL has no such limit.
-      const blob = await domToBlob(previewRef.current, {
-        width: format.width,
-        height: format.height,
-        scale: 1,
-        type: 'image/png',
-        // Fill behind the stage's tiny rounded corners so they don't export as transparent notches.
-        backgroundColor: theme === 'dark' ? '#000000' : '#ffffff',
-        // Wait for web fonts to be embedded so the caption never falls back to a system font.
-        font: {},
-      });
-      const url = URL.createObjectURL(blob);
-      renderedUrlRef.current = url;
-      setRendered({
-        url,
-        blob,
-        name: `${slugify(trip.title)}-${includedList.length}stops-${format.width}x${format.height}.png`,
-      });
-    } catch (err) {
-      // Previously this path had no catch at all, so a failed capture just reset the button and
-      // looked like "nothing happened". Surface it instead.
-      setExportError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setExporting(false);
-    }
-  }
-
-  /** Step 2 — save the already-rendered Blob. Runs inside a fresh tap, so iOS still trusts it.
-   *  Must not `await` anything before navigator.share(): an await drops the user activation. */
-  function handleSave() {
-    if (!rendered) return;
-    const file = new File([rendered.blob], rendered.name, { type: 'image/png' });
-
-    // iOS has no real "download": the share sheet ("Save Image") is the native way into Photos.
-    if (isIOS() && typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
-      navigator.share({ files: [file], title: rendered.name }).catch(() => {
-        /* user dismissed the sheet, or share refused — the image is still on screen to long-press */
-      });
-      return;
-    }
-
-    // Everywhere else: a normal object-URL download. The anchor must be in the document for
-    // Firefox to honour the click.
-    const link = document.createElement('a');
-    link.href = rendered.url;
-    link.download = rendered.name;
-    link.rel = 'noopener';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    // The preview renders the stage at FULL export resolution (it's only *displayed* shrunk via
+    // a CSS transform on an ancestor), so we capture previewRef 1:1 — MapLibre's own dense detail,
+    // small labels, thin route line and normal-size attribution all come through crisply. The
+    // ancestor transform doesn't affect the capture: modern-screenshot clones from previewRef
+    // down (which has no transform of its own) and honors the explicit width/height.
+    render(previewRef.current, {
+      width: format.width,
+      height: format.height,
+      backgroundColor: theme === 'dark' ? '#000000' : '#ffffff',
+      fileName: `${slugify(trip.title)}-${includedList.length}stops-${format.width}x${format.height}.png`,
+    });
   }
 
   return (
