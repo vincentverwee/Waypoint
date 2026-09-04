@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, use } from 'react';
 import Link from 'next/link';
-import { domToPng } from 'modern-screenshot';
+import { domToBlob } from 'modern-screenshot';
 import { AppShell } from '@/components/layout/AppShell';
 import { MapWrapper } from '@/components/map/MapWrapper';
 import { Button } from '@/components/ui/button';
@@ -11,7 +11,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Trip, Location } from '@/types';
 import { getTripWithLocations } from '@/lib/trips-store';
 import { calculateRoute, RouteResult } from '@/lib/routing/osrm';
-import { ArrowLeft, Download, Sun, Moon, ImageDown, Check, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Download, Sun, Moon, ImageDown, Check, RotateCcw, Share2, X } from 'lucide-react';
 
 interface ExportFormat {
   id: string;
@@ -41,6 +41,15 @@ function formatDate(dateStr: string | null) {
     month: 'short',
     year: 'numeric',
   });
+}
+
+/** iOS/iPadOS (incl. iPadOS reporting itself as "MacIntel" with a touch screen). */
+function isIOS() {
+  if (typeof navigator === 'undefined') return false;
+  return (
+    /iP(hone|ad|od)/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
 }
 
 function slugify(text: string) {
@@ -219,6 +228,13 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   // The full-trip route — calculated ONCE per trip, never on checkbox changes.
   const [route, setRoute] = useState<RouteResult | null>(null);
   const [exporting, setExporting] = useState(false);
+  // Rendering and saving are deliberately TWO steps (see handleRender/handleSave): rendering takes
+  // seconds, which on iOS Safari outlives the tap's transient user activation — a download or share
+  // fired at the end of it is silently ignored. The finished image is parked here and saved by a
+  // second, fresh tap.
+  const [rendered, setRendered] = useState<{ url: string; blob: Blob; name: string } | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const renderedUrlRef = useRef<string | null>(null);
 
   // We capture the on-screen preview itself (already loaded, fitted, with markers/route/labels)
   // and upscale it to the target resolution — no hidden second map to race, which is what kept
@@ -258,6 +274,14 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
       cancelled = true;
     };
   }, [locations]);
+
+  // Release the last rendered image's object URL when this page goes away.
+  useEffect(
+    () => () => {
+      if (renderedUrlRef.current) URL.revokeObjectURL(renderedUrlRef.current);
+    },
+    []
+  );
 
   // Stable array identity so the map only rebuilds markers when the featured set changes.
   const labeledIds = useMemo(() => [...included], [included]);
@@ -364,7 +388,18 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   const totalKm = route?.distanceKm ?? null;
   const routeGeometry = route?.geometry ?? null;
 
+  /** Drop a previously rendered image — anything that changes the picture invalidates it. */
+  function clearRendered() {
+    if (renderedUrlRef.current) {
+      URL.revokeObjectURL(renderedUrlRef.current);
+      renderedUrlRef.current = null;
+    }
+    setRendered(null);
+    setExportError(null);
+  }
+
   function toggleStop(locId: string) {
+    clearRendered();
     setIncluded((prev) => {
       const next = new Set(prev);
       if (next.has(locId)) next.delete(locId);
@@ -374,11 +409,14 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
   }
 
   function setAll(on: boolean) {
+    clearRendered();
     setIncluded(on ? new Set(locations.map((l) => l.id)) : new Set());
   }
 
-  async function handleExport() {
+  /** Step 1 — rasterize the preview into a Blob. Slow (seconds), so it does NOT try to save. */
+  async function handleRender() {
     if (!trip || !previewRef.current) return;
+    clearRendered();
     setExporting(true);
     try {
       // Make sure the web font is loaded so captions don't fall back to a system font.
@@ -397,22 +435,58 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
       // small labels, thin route line and normal-size attribution all come through crisply. The
       // ancestor transform doesn't affect the capture: modern-screenshot clones from previewRef
       // down (which has no transform of its own) and honors the explicit width/height.
-      const dataUrl = await domToPng(previewRef.current, {
+      //
+      // domToBlob, not domToPng: a 1080×1920 PNG as a base64 `data:` URL is several megabytes, and
+      // iOS Safari silently refuses to download one that big. A Blob + object URL has no such limit.
+      const blob = await domToBlob(previewRef.current, {
         width: format.width,
         height: format.height,
         scale: 1,
+        type: 'image/png',
         // Fill behind the stage's tiny rounded corners so they don't export as transparent notches.
         backgroundColor: theme === 'dark' ? '#000000' : '#ffffff',
         // Wait for web fonts to be embedded so the caption never falls back to a system font.
         font: {},
       });
-      const link = document.createElement('a');
-      link.href = dataUrl;
-      link.download = `${slugify(trip.title)}-${includedList.length}stops-${format.width}x${format.height}.png`;
-      link.click();
+      const url = URL.createObjectURL(blob);
+      renderedUrlRef.current = url;
+      setRendered({
+        url,
+        blob,
+        name: `${slugify(trip.title)}-${includedList.length}stops-${format.width}x${format.height}.png`,
+      });
+    } catch (err) {
+      // Previously this path had no catch at all, so a failed capture just reset the button and
+      // looked like "nothing happened". Surface it instead.
+      setExportError(err instanceof Error ? err.message : String(err));
     } finally {
       setExporting(false);
     }
+  }
+
+  /** Step 2 — save the already-rendered Blob. Runs inside a fresh tap, so iOS still trusts it.
+   *  Must not `await` anything before navigator.share(): an await drops the user activation. */
+  function handleSave() {
+    if (!rendered) return;
+    const file = new File([rendered.blob], rendered.name, { type: 'image/png' });
+
+    // iOS has no real "download": the share sheet ("Save Image") is the native way into Photos.
+    if (isIOS() && typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: rendered.name }).catch(() => {
+        /* user dismissed the sheet, or share refused — the image is still on screen to long-press */
+      });
+      return;
+    }
+
+    // Everywhere else: a normal object-URL download. The anchor must be in the document for
+    // Firefox to honour the click.
+    const link = document.createElement('a');
+    link.href = rendered.url;
+    link.download = rendered.name;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   }
 
   return (
@@ -568,7 +642,10 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
                         variant={f.id === formatId ? 'default' : 'outline'}
                         size="sm"
                         className="text-xs"
-                        onClick={() => setFormatId(f.id)}
+                        onClick={() => {
+                          clearRendered();
+                          setFormatId(f.id);
+                        }}
                       >
                         {f.label}
                       </Button>
@@ -583,7 +660,10 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
                       variant={theme === 'light' ? 'default' : 'outline'}
                       size="sm"
                       className="gap-1.5"
-                      onClick={() => setTheme('light')}
+                      onClick={() => {
+                        clearRendered();
+                        setTheme('light');
+                      }}
                     >
                       <Sun size={14} />
                       Light
@@ -592,7 +672,10 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
                       variant={theme === 'dark' ? 'default' : 'outline'}
                       size="sm"
                       className="gap-1.5"
-                      onClick={() => setTheme('dark')}
+                      onClick={() => {
+                        clearRendered();
+                        setTheme('dark');
+                      }}
                     >
                       <Moon size={14} />
                       Dark
@@ -607,21 +690,67 @@ export default function ExportPage({ params }: { params: Promise<{ id: string }>
                       id="accent-color"
                       type="color"
                       value={accentColor}
-                      onChange={(e) => setAccentColor(e.target.value)}
+                      onChange={(e) => {
+                        clearRendered();
+                        setAccentColor(e.target.value);
+                      }}
                       className="h-9 w-9 cursor-pointer rounded-lg border border-input p-0.5"
                     />
                     <span className="text-sm text-muted-foreground">{accentColor}</span>
                   </div>
                 </div>
 
+                {/* Two steps on purpose. Rendering takes seconds; on iOS Safari a download or
+                    share fired after that delay has outlived the tap's user activation and is
+                    silently dropped (which is exactly how this used to fail — "click, flash,
+                    nothing"). The save below runs on its own fresh tap. */}
                 <Button
                   className="w-full gap-2"
                   disabled={exporting || routeLoading}
-                  onClick={handleExport}
+                  onClick={handleRender}
                 >
-                  <Download size={16} />
-                  {exporting ? 'Rendering…' : 'Export PNG'}
+                  <ImageDown size={16} />
+                  {exporting ? 'Rendering…' : rendered ? 'Render again' : 'Render image'}
                 </Button>
+
+                {exportError && (
+                  <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3">
+                    <p className="text-xs font-medium text-destructive">Rendering failed</p>
+                    <p className="mt-1 break-words text-xs text-muted-foreground">{exportError}</p>
+                  </div>
+                )}
+
+                {rendered && (
+                  <div className="space-y-2 rounded-xl border border-border/60 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-medium">
+                        Ready — {format.width}×{format.height}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={clearRendered}
+                        className="text-muted-foreground/60 transition-colors hover:text-foreground"
+                        title="Discard"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={rendered.url}
+                      alt={`${trip.title} export preview`}
+                      className="w-full rounded-lg border border-border/60"
+                    />
+                    <Button className="w-full gap-2" onClick={handleSave}>
+                      {isIOS() ? <Share2 size={16} /> : <Download size={16} />}
+                      {isIOS() ? 'Save image' : 'Download PNG'}
+                    </Button>
+                    <p className="text-[11px] leading-snug text-muted-foreground">
+                      On iPhone: tap <strong>Save image</strong> and pick “Save Image”, or long-press
+                      the picture above.
+                    </p>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
