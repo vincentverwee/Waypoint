@@ -163,6 +163,7 @@ function ExportStage({
             </div>
           )}
 
+          {(totalKm > 0 || statsLine) && (
           <div
             style={{
               marginTop: 30 * scale,
@@ -193,6 +194,7 @@ function ExportStage({
               </span>
             )}
           </div>
+          )}
         </div>
       </div>
     </div>
@@ -209,8 +211,11 @@ export default function AllTripsExportPage() {
   // Per-trip caption overrides for the legend. Blank/absent falls back to the trip title.
   const [customLabels, setCustomLabels] = useState<Record<string, string>>({});
   const [customHeadline, setCustomHeadline] = useState('');
+  // Override for the "N trips · N countries · N cities" line. Blank falls back to the computed one.
+  const [customStats, setCustomStats] = useState('');
   const [showLegend, setShowLegend] = useState(true);
   const [showDots, setShowDots] = useState(true);
+  const [showStats, setShowStats] = useState(true);
   const [formatId, setFormatId] = useState(FORMATS[0].id);
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [accentColor, setAccentColor] = useState(DEFAULT_ACCENT);
@@ -294,13 +299,14 @@ export default function AllTripsExportPage() {
   const totalKm = includedTrips.reduce((sum, t) => sum + (t.total_km ?? 0), 0);
   const countries = new Set(includedLocations.map((l) => l.country).filter(Boolean)).size;
   const cities = new Set(includedLocations.map((l) => l.city).filter(Boolean)).size;
-  const statsLine = [
+  const defaultStatsLine = [
     `${includedTrips.length} ${includedTrips.length === 1 ? 'trip' : 'trips'}`,
     countries > 0 ? `${countries} ${countries === 1 ? 'country' : 'countries'}` : null,
     cities > 0 ? `${cities} ${cities === 1 ? 'city' : 'cities'}` : null,
   ]
     .filter(Boolean)
     .join(' · ');
+  const statsLine = showStats ? customStats.trim() || defaultStatsLine : '';
 
   // Default headline = the year (or year range) the included trips span.
   const years = includedTrips
@@ -462,7 +468,7 @@ export default function AllTripsExportPage() {
                   <p className="text-xs text-muted-foreground">
                     {routes.length < includedTrips.length
                       ? `${routes.length}/${includedTrips.length} have a route line — the rest show stops only`
-                      : statsLine}
+                      : defaultStatsLine}
                   </p>
                 </div>
 
@@ -496,8 +502,41 @@ export default function AllTripsExportPage() {
                 </div>
 
                 <div className="space-y-2">
+                  <Label htmlFor="stats-line">Stats line</Label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="stats-line"
+                      value={customStats}
+                      placeholder={defaultStatsLine}
+                      disabled={!showStats}
+                      onChange={(e) => {
+                        clearRendered();
+                        setCustomStats(e.target.value);
+                      }}
+                      className="min-w-0 flex-1 rounded-md border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 focus:ring-1 focus:ring-ring disabled:opacity-50"
+                    />
+                    {customStats.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearRendered();
+                          setCustomStats('');
+                        }}
+                        className="shrink-0 text-muted-foreground/50 transition-colors hover:text-foreground"
+                        title="Reset to the counted totals"
+                      >
+                        <RotateCcw size={14} />
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Leave empty to keep the counted totals, or write your own.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
                   <Label>Show</Label>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     <Button
                       variant={showLegend ? 'default' : 'outline'}
                       size="sm"
@@ -519,6 +558,17 @@ export default function AllTripsExportPage() {
                       }}
                     >
                       Stop dots
+                    </Button>
+                    <Button
+                      variant={showStats ? 'default' : 'outline'}
+                      size="sm"
+                      className="text-xs"
+                      onClick={() => {
+                        clearRendered();
+                        setShowStats((v) => !v);
+                      }}
+                    >
+                      Stats
                     </Button>
                   </div>
                 </div>
